@@ -105,6 +105,7 @@ libraryDependencies ++= Seq(
   "net.databinder"    %% "unfiltered-netty"          % unfilteredVersion,
   "io.argonaut"       %% "argonaut"                  % "6.1-M4",
   "org.jboss.aesh"    %  "aesh"                      % "0.55",
+  "com.chuusai"       %% "shapeless"                 % "2.0.0",
   "org.scalaz"        %% "scalaz-scalacheck-binding" % scalazVersion             % "test",
   "com.github.julien-truffaut" %% "monocle-law"      % monocleVersion            % "test",
   "org.scalacheck"    %% "scalacheck"                % "1.10.1"                  % "test",
