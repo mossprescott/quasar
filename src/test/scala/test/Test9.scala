@@ -2,7 +2,7 @@ package test
 
 object Test9 extends App {
 
-  import shapeless.{Data => _, :: => _, _}
+  import shapeless.{Data => _, :: => #::, _}
   import syntax.singleton._
   import record._
   
@@ -23,6 +23,20 @@ object Test9 extends App {
   
   println(book.keys)
   
+  
+  
+  // A function expecting a "record" containing a certain key:
+  
+  // Defining a Witness is the only way to write the necessary type. See http://stackoverflow.com/a/19316446
+  val titleW = Witness("title")
+  
+  def getTitle[L <: HList](xs: L)(implicit sel: ops.record.Selector[L, titleW.T]) = xs("title")
+  
+  val bookTitle: String = getTitle(book)
+  val otherTitle: Int = getTitle(("title" ->> 0) :: HNil)
+  
+  val anotherRecord: Boolean with KeyTag[titleW.T, Boolean] #:: HNil = ("title" ->> true) :: HNil
+  val anotherTitle: Boolean = getTitle(anotherRecord)
   
   
   // Now try it with Phase:
@@ -69,15 +83,9 @@ object Test9 extends App {
   println(stringed.show)
   
   
+  // type SumRecord = Record.`'sum -> Int`.T  // doesn't compile; Record not found (WTF)
   
-  // def shapify[F[_], A](phase: Phase[F, Unit, A], key: shapeless.tag.Tagged[_]) = {
-  //   Phase { (attr: Attr[F, HList]) =>
-  //     val attr1: Attr[LogicalPlan, A] = phase(attr)
-  //     attr1.map((a: A) => (key ->> n) :: HNil)
-  //   }
-  // }
-
-  
+  /** Transforms a phase, putting its output annotation in a singleton HList under the key `'sum`. */
   def summify(phase: Phase[LogicalPlan, Unit, Int]) = {
     Phase { (attr: Attr[LogicalPlan, Unit]) => 
       val a1: Attr[LogicalPlan, Int] = phase(attr)
@@ -94,5 +102,34 @@ object Test9 extends App {
   // println(summedA.unFix.attr("foo"))  // compile error
   val i: Int = summedA.unFix.attr('sum)
   println(i)
+  
+  
+  
+  /** Transforms a phase, adding its output annotation to the tree's HList under an arbitrary key. */
+  def recordify[F[_], A, K](phase: Phase[F, Unit, A], k: Witness)
+    (implicit F: Traverse[F], upd: ops.record.Updater[HNil, K]):
+    Phase[F, HList, (A with KeyTag[k.T, A]) #:: HNil] = 
+  {
+    Phase { (attr: Attr[F, HList]) =>
+      val attr1: Attr[F, A] = phase(attr.map(_ => ()))
+      attr1.map((a: A) => HNil.updated(k, a))
+    }
+  }
+
+
+  val wSum = Witness('sum)
+  // val wSum2 = 'sum.witness
+  type sumT = wSum.T
+  // ops.record.Selector[L, sumT]
+  
+  val summedB = recordify[LogicalPlan, Int, sumT](p1, wSum)
+  
+  val recSum1: Int = summedB(attrK(sum, HNil)).unFix.attr('sum)
+  
+  val wTotal = 'total.witness
+  type totalT = wTotal.T
+  val recSum2: Int = recordify[LogicalPlan, Int, totalT](p1, 'total).apply(attrK(sum, HNil)).unFix.attr('total)
+  
+  println(recSum1 + "; " + recSum2)
   
 }
