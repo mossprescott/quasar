@@ -106,13 +106,15 @@ object Test9 extends App {
   
   
   /** Transforms a phase, adding its output annotation to the tree's HList under an arbitrary key. */
-  def recordify[F[_], A, K](phase: Phase[F, Unit, A], k: Witness)
-    (implicit F: Traverse[F], upd: ops.record.Updater[HNil, K]):
-    Phase[F, HList, (A with KeyTag[k.T, A]) #:: HNil] = 
+  def recordify[F[_], A, K, L <: HList]
+    (phase: Phase[F, Unit, A], k: Witness)
+    (implicit F: Traverse[F], upd: ops.record.Updater[L, FieldType[k.T, A]]):
+    Phase[F, L, upd.Out] = 
   {
-    Phase { (attr: Attr[F, HList]) =>
-      val attr1: Attr[F, A] = phase(attr.map(_ => ()))
-      attr1.map((a: A) => HNil.updated(k, a))
+    Phase { (attrL: Attr[F, L]) =>
+      val attrA: Attr[F, A] = phase(attrL.map(_ => ()))
+      val attrLA = unsafeZip2(attrL, attrA)
+      attrLA.map { case (l, a) => l.updated(k, a)(upd) }
     }
   }
 
@@ -122,14 +124,20 @@ object Test9 extends App {
   type sumT = wSum.T
   // ops.record.Selector[L, sumT]
   
-  val summedB = recordify[LogicalPlan, Int, sumT](p1, wSum)
+  val summedB = recordify[LogicalPlan, Int, sumT, HNil](p1, wSum)
   
   val recSum1: Int = summedB(attrK(sum, HNil)).unFix.attr('sum)
   
   val wTotal = 'total.witness
-  type totalT = wTotal.T
-  val recSum2: Int = recordify[LogicalPlan, Int, totalT](p1, 'total).apply(attrK(sum, HNil)).unFix.attr('total)
+  // type totalT = wTotal.T
+  val wSilly = 'foo.witness
+  type sillyT = FieldType[wSilly.T, Int]
+  val sillyVal = ('foo ->> 0) :: HNil
+  val summedB2 = recordify[LogicalPlan, Int, wTotal.T, sillyT #:: HNil](p1, 'total)
+  val recSum2: Int = summedB2(attrK(sum, sillyVal)).unFix.attr('total)
   
   println(recSum1 + "; " + recSum2)
-  
+  println(summedB(attrK(sum, HNil)).unFix.attr.keys)
+  println(summedB2(attrK(sum, sillyVal)).unFix.attr)
+  println(summedB2(attrK(sum, sillyVal)).unFix.attr.keys)
 }
