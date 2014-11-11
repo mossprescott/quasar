@@ -42,7 +42,7 @@ object Test9 extends App {
   // def getTitle2[L <: HList, A](xs: L)(implicit sel: ops.record.Selector[L, titleW.T]): A = dumb(getOne(xs, titleW))
   // val bookTitle2: String = getTitle2(book)
 
-  def getOne2[L <: HList](xs: L, k: Witness)(implicit sel: ops.record.Selector[L, k.T]): String = xs(k)
+  // def getOne2[L <: HList](xs: L, k: Witness)(implicit sel: ops.record.Selector[L, k.T]): String = xs(k)
   
   // Now try it with Phase:
   
@@ -146,20 +146,26 @@ object Test9 extends App {
   println(summedB2(attrK(sum, sillyVal)).unFix.attr.keys)
   
 
-  /** Transforms a phase consuming two inputs, adding its output annotation to the tree's HList under an arbitrary key. */
-  def recordify2to1[F[_], A, B, C, KA, KB, KC, L <: HList]
-    (phase: Phase[F, (A, B), C], ka: Witness, kb: Witness, kc: Witness)
-    (implicit F: Traverse[F], 
-      selA: ops.record.Selector[L, ka.T],
-      selB: ops.record.Selector[L, kb.T],
-      updC: ops.record.Updater[L, FieldType[kc.T, C]]):
-    Phase[F, L, updC.Out] = 
-  {
-    Phase { (attrL: Attr[F, L]) =>
-      val attrC: Attr[F, C] = phase(attrL.map(l => (l(ka): A, l.get(kb))))
-      val attrLC = unsafeZip2(attrL, attrC)
-      attrLC.map { case (l, c) => l.updated(kc, c)(updC) }
-    }
-  }
-  
+  // /** Transforms a phase consuming two inputs, adding its output annotation to the tree's HList under an arbitrary key. */
+  // def recordify2to1[F[_], A, B, C, KA, KB, KC, L <: HList]
+  //   (phase: Phase[F, (A, B), C], ka: Witness, kb: Witness, kc: Witness)
+  //   (implicit F: Traverse[F],
+  //     selA: ops.record.Selector[L, ka.T],
+  //     selB: ops.record.Selector[L, kb.T],
+  //     updC: ops.record.Updater[L, FieldType[kc.T, C]]):
+  //   Phase[F, L, updC.Out] =
+  // {
+  //   Phase { (attrL: Attr[F, L]) =>
+  //     val attrC: Attr[F, C] = phase(attrL.map(l => (l(ka): A, l.get(kb))))
+  //     val attrLC = unsafeZip2(attrL, attrC)
+  //     attrLC.map { case (l, c) => l.updated(kc, c)(updC) }
+  //   }
+  // }
+
+  // import shapeless.syntax.std.tuple._
+  //
+  // val hl = "abc" :: 0 :: HNil
+  // val hl0: String = hl(0)
+  // val hl1: Int = hl(1)
+  // // val hl2 = hl(2)
 }
