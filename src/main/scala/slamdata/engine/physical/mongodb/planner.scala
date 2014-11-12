@@ -703,26 +703,48 @@ object MongoDbPlanner extends Planner[Workflow] {
   //                   \ /
   //                    |
   //              WorkflowPhase
-  val AllPhases: PhaseS[LogicalPlan, NameGen, Unit, Error \/ WorkflowBuilder] =
-    liftPhaseS((FieldPhase[Unit] &&& JsExprPhase[Unit])
-      .fork(SelectorPhase, PhaseMArrow[Id, LogicalPlan].arr(_._2))) >>>
-      WorkflowPhase
+  // val AllPhases: PhaseS[LogicalPlan, NameGen, Unit, Error \/ WorkflowBuilder] =
+  //   liftPhaseS((FieldPhase[Unit] &&& JsExprPhase[Unit])
+  //     .fork(SelectorPhase, PhaseMArrow[Id, LogicalPlan].arr(_._2))) >>>
+  //     WorkflowPhase
+  //
+  // def plan(logical: Term[LogicalPlan]): OutputM[Workflow] = {
+  //   val a: State[NameGen, Attr[LogicalPlan, Error \/ WorkflowBuilder]] = AllPhases(attrUnit(logical))
+  //   a.evalZero.unFix.attr.map(_.build)
+  // }
 
-  def plan(logical: Term[LogicalPlan]): OutputM[Workflow] = {
-    // HACK:
-    val attrL = RecPhases(attrK(logical, shapeless.HNil))
-    RenderTree.showSwing(attrL)
-    
-    val a: State[NameGen, Attr[LogicalPlan, Error \/ WorkflowBuilder]] = AllPhases(attrUnit(logical))
-    a.evalZero.unFix.attr.map(_.build)
-  }
-  
-  import shapeless.{HNil, Witness}
-  
+  import shapeless.{HNil, HList, Witness}
+  import shapeless.record._
+
   private val wField    = Witness('Field)
   private val wJsExpr   = Witness('JsExpr)
   private val wSelector = Witness('Selector)
   private val wWorkflow = Witness('Workflow)
   
-  val RecPhases = recordPhaseM0[Id, LogicalPlan, Error \/ Option[BsonField], wField.T, HNil](FieldPhase, wField)
+  val AllPhases = {
+    // Help out the type checker by explicitly typing the Workflow phase as PhaseM:
+    val wfpm: PhaseM[WorkflowBuilder.MId, LogicalPlan, (OutputM[Selector], OutputM[Js.Expr => Js.Expr]), OutputM[WorkflowBuilder]] = WorkflowPhase
+    
+    val statelessPhases =
+      recordPhaseM0[Id, LogicalPlan, Error \/ Option[BsonField], wField.T, HNil](
+                    FieldPhase, wField) >>>
+      recordPhaseM0(JsExprPhase, wJsExpr) >>>
+      recordPhaseM2(SelectorPhase, wField, wJsExpr, wSelector)
+
+    liftPhaseS(statelessPhases) >>>
+                  recordPhaseM2(wfpm, wSelector, wJsExpr, wWorkflow)
+  }
+
+  def plan(logical: Term[LogicalPlan]): OutputM[Workflow] = {
+    val attrL = AllPhases(attrK(logical, shapeless.HNil)).evalZero
+    
+    // HACK: need to extract the keys from the type and label the nodes with them, and use
+    // the RenderTree instance for each annotation.
+    // implicit def RecordRenderTree[L <: HList]/*(implicit ValueConstraint???)*/ = new RenderTree[L] {
+    //   def render(v: L) = NonTerminal("", v.toList.map(e => Terminal(e.toString, List("elem"))), List("Annotation"))
+    // }
+    // RenderTree.showSwing(attrL)
+
+    attrL.unFix.attr(wWorkflow).map(_.build)
+  }
 }

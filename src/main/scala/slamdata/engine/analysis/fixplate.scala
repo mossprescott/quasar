@@ -725,6 +725,25 @@ sealed trait phases extends attr {
   //   }
   // }
 
+  /**
+   Phase transformer that runs a phase taking two input annotations, found under 
+   the given keys in a shapeless record, and adds its output annotation.
+  */
+  def recordPhaseM2[M[_], F[_], A, B, C, KA, KB, KC, L <: HList]
+    (phase: PhaseM[M, F, (A, B), C], ka: Witness, kb: Witness, kc: Witness)
+    (implicit M: Functor[M], F: Traverse[F], 
+      selA: ops.record.Selector.Aux[L, ka.T, A],
+      selB: ops.record.Selector.Aux[L, kb.T, B],
+      updC: ops.record.Updater[L, FieldType[kc.T, C]]):
+    PhaseM[M, F, L, updC.Out] =
+  {
+    PhaseM { (attrL: Attr[F, L]) =>
+      phase(attrL.map(l => (l(ka), l(kb)))).map { (attrC: Attr[F, C]) =>
+        unsafeZip2(attrL, attrC).map { case (l, c) => l.updated(kc, c)(updC) }
+      }
+    }
+  }
+
 
   implicit def PhaseMArrow[M[_], F[_]](implicit F: Traverse[F], M: Monad[M]) = new Arrow[({type f[a, b] = PhaseM[M, F, a, b]})#f] {
     type Arr[A, B] = PhaseM[M, F, A, B]
