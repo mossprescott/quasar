@@ -7,8 +7,10 @@ import slamdata.engine.analysis.fixplate._
 import slamdata.engine.analysis._
 import slamdata.engine.sql.{SQLParser, Query}
 import slamdata.engine.std._
+import slamdata.engine.javascript._
 
 import scalaz._
+import Scalaz._
 
 import collection.immutable.ListMap
 
@@ -678,17 +680,35 @@ class PlannerSpec extends Specification with CompilerHelpers with PendingWithAcc
       beWorkflow(chain(
         $read(Collection("zips")),
         $project(Reshape.Doc(ListMap(
-          BsonField.Name("lEft") -> \/- (Reshape.Doc(ListMap(
-            BsonField.Name("value") -> \/- (Reshape.Doc(ListMap(
-              BsonField.Name("city") -> -\/ (ExprOp.DocField(BsonField.Name("city"))))))))),
-          BsonField.Name("rIght") -> \/- (Reshape.Doc(ListMap(
-            BsonField.Name("city") -> -\/ (ExprOp.DocField(BsonField.Name("city")))))))),
-          IncludeId),
+          BsonField.Name("__tmp1") -> \/- (Reshape.Arr(ListMap(
+            BsonField.Index(0) -> -\/ (ExprOp.DocField(BsonField.Name("city")))))),
+          BsonField.Name("__tmp2") -> -\/ (ExprOp.DocVar.ROOT()))),
+          ExcludeId),
         $group(
           Grouped(ListMap(
-            BsonField.Name("value") -> ExprOp.First(ExprOp.DocField(BsonField.Name("lEft") \ BsonField.Name("value"))))),
-          -\/ (ExprOp.DocField(BsonField.Name("rIght"))))))
-    }.pendingUntilFixed("should group and not unwind; currenly just ignored, effectively")
+            BsonField.Name("city") -> ExprOp.Push(ExprOp.DocField(BsonField.Name("__tmp2") \ BsonField.Name("city"))))),
+          -\/ (ExprOp.DocField(BsonField.Name("__tmp1")))),
+        $unwind(ExprOp.DocField(BsonField.Name("city")))))
+    }
+
+    "plan trivial group by with wildcard" in {
+      plan("select * from zips group by city") must
+      beWorkflow(chain(
+        $read(Collection("zips")),
+        $project(Reshape.Doc(ListMap(
+          BsonField.Name("__tmp1") -> \/- (Reshape.Arr(ListMap(
+            BsonField.Index(0) -> -\/ (ExprOp.DocField(BsonField.Name("city")))))),
+          BsonField.Name("__tmp2") -> -\/ (ExprOp.DocVar.ROOT()))),
+          ExcludeId),
+        $group(
+          Grouped(ListMap(
+            BsonField.Name("__tmp0") -> ExprOp.Push(ExprOp.DocField(BsonField.Name("__tmp2"))))),
+          -\/ (ExprOp.DocField(BsonField.Name("__tmp1")))),
+        $unwind(ExprOp.DocField(BsonField.Name("__tmp0"))),
+        $project(Reshape.Doc(ListMap(
+          BsonField.Name("value") -> -\/ (ExprOp.DocField(BsonField.Name("__tmp0"))))),
+          ExcludeId)))
+    }
 
     "plan count grouped by single field" in {
       plan("select count(*) from bar group by baz") must
@@ -1091,6 +1111,41 @@ class PlannerSpec extends Specification with CompilerHelpers with PendingWithAcc
                 BsonField.Name("city") -> -\/(ExprOp.DocField(BsonField.Name("value") \ BsonField.Name("city"))))),
                 ExcludeId)))
 
+    }
+    
+    "plan select length()" in {
+      plan("select length(city) from zips") must
+        beWorkflow(chain(
+          $read(Collection("zips")),
+          $project(
+            Reshape.Doc(ListMap(
+              BsonField.Name("value") -> -\/(ExprOp.DocField(BsonField.Name("city"))))),
+            IgnoreId),
+          $simpleMap(x => JsCore.Select(JsCore.Select(x, "value").fix, "length").fix),
+          $project(
+            Reshape.Doc(ListMap(
+              BsonField.Name("0") -> -\/(ExprOp.DocVar.ROOT()))),
+            IgnoreId)))
+    }
+    
+    "plan select length() and simple field" in {
+      plan("select city, length(city) from zips") must
+      beWorkflow(chain(
+        $read(Collection("zips")),
+        $project(
+          Reshape.Doc(ListMap(
+            BsonField.Name("__tmp2") -> \/-(Reshape.Doc(ListMap(
+              BsonField.Name("value") -> -\/(ExprOp.DocField(BsonField.Name("city")))))),
+            BsonField.Name("__tmp3") -> -\/(ExprOp.DocVar.ROOT()))),
+          IncludeId),
+        $simpleMap(value => JsCore.Obj(ListMap(
+          "__tmp0" -> JsCore.Select(JsCore.Select(JsCore.Select(value, "__tmp2").fix, "value").fix, "length").fix,
+          "__tmp1" -> JsCore.Select(value, "__tmp3").fix)).fix),
+        $project(
+          Reshape.Doc(ListMap(
+            BsonField.Name("city") -> -\/(ExprOp.DocField(BsonField.Name("__tmp1") \ BsonField.Name("city"))),
+            BsonField.Name("1") -> -\/(ExprOp.DocField(BsonField.Name("__tmp0"))))),
+          IgnoreId)))
     }
     
     "plan combination of two distinct sets" in {
