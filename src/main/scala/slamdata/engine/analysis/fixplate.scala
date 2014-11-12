@@ -697,6 +697,10 @@ sealed trait phases extends attr {
   def liftPhaseS[F[_], S, A, B](phase: Phase[F, A, B]): PhaseS[F, S, A, B] = liftPhase[({type f[X] = State[S, X]})#f, F, A, B](phase)
 
 
+  /** Helper to start the chain of record phases with a simpler type annotation. */
+  def recordPhaseMNil[M[_], F[_]](implicit M: Applicative[M], F: Traverse[F]): PhaseM[M, F, Unit, HNil.type] =
+    PhaseM { attr: Attr[F, Unit] => attr.map(_ => HNil).point[M] }
+
   /**
    Phase transformer that runs a phase taking no input annotations, and adds 
    its output annotation to a shapeless record (tagged `HList`).

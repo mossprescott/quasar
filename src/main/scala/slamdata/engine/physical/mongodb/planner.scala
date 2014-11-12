@@ -726,8 +726,8 @@ object MongoDbPlanner extends Planner[Workflow] {
     val wfpm: PhaseM[WorkflowBuilder.MId, LogicalPlan, (OutputM[Selector], OutputM[Js.Expr => Js.Expr]), OutputM[WorkflowBuilder]] = WorkflowPhase
     
     val statelessPhases =
-      recordPhaseM0[Id, LogicalPlan, Error \/ Option[BsonField], wField.T, HNil](
-                    FieldPhase, wField) >>>
+      recordPhaseMNil[Id, LogicalPlan] >>>
+      recordPhaseM0(FieldPhase, wField) >>>
       recordPhaseM0(JsExprPhase, wJsExpr) >>>
       recordPhaseM2(SelectorPhase, wField, wJsExpr, wSelector)
 
