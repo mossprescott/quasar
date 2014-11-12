@@ -702,7 +702,20 @@ object MongoDbPlanner extends Planner[Workflow] {
       WorkflowPhase
 
   def plan(logical: Term[LogicalPlan]): OutputM[Workflow] = {
+    // HACK:
+    val attrL = RecPhases(attrK(logical, shapeless.HNil))
+    RenderTree.showSwing(attrL)
+    
     val a: State[NameGen, Attr[LogicalPlan, Error \/ WorkflowBuilder]] = AllPhases(attrUnit(logical))
     a.evalZero.unFix.attr.map(_.build)
   }
+  
+  import shapeless.{HNil, Witness}
+  
+  private val wField    = Witness('Field)
+  private val wJsExpr   = Witness('JsExpr)
+  private val wSelector = Witness('Selector)
+  private val wWorkflow = Witness('Workflow)
+  
+  val RecPhases = recordPhaseM0[Id, LogicalPlan, Error \/ Option[BsonField], wField.T, HNil](FieldPhase, wField)
 }

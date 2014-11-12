@@ -122,10 +122,8 @@ object Test10 extends App {
   val str2 = strList2(summed2)
   println(str2)
   
-  // val strList2 = listPhase1[LogicalPlan, Int #:: HNil, Int, String](stred, 0)
-  // def strList2[L <: HList] = listPhase1(stred, 0)
-  val str3 = listPhase1(stred, 0).apply(summed2)
-  println(str3)
+//  val str3 = listPhase1(stred, 0).apply(summed2)  // won't infer the type?
+  // println(str3)
   
   // val n: String = 1.narrow
   // val w: String = 1.witness

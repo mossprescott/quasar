@@ -36,13 +36,18 @@ object Test9 extends App {
   val otherTitle: Int = getTitle(("title" ->> 0) :: HNil)
 
   val anotherRecord: Boolean with KeyTag[titleW.T, Boolean] #:: HNil = ("title" ->> true) :: HNil
+  // val anotherRecord: Boolean with KeyTag[titleW.T, Boolean] #:: HNil = ((titleW.value: titleW.T) ->> true) :: HNil
   val anotherTitle: Boolean = getTitle(anotherRecord)
   
   def getOne[L <: HList](xs: L, k: Witness)(implicit sel: ops.record.Selector[L, k.T]) = xs(k)
   // def getTitle2[L <: HList, A](xs: L)(implicit sel: ops.record.Selector[L, titleW.T]): A = dumb(getOne(xs, titleW))
   // val bookTitle2: String = getTitle2(book)
 
-  // def getOne2[L <: HList](xs: L, k: Witness)(implicit sel: ops.record.Selector[L, k.T]): String = xs(k)
+  def getOne2[L <: HList, A](xs: L, k: Witness)(implicit sel: ops.record.Selector.Aux[L, k.T, A]): A = xs(k)
+  
+  val bookTitle3: String = getOne2(book, titleW)
+  println("via getOne2: " + bookTitle3)
+  
   
   // Now try it with Phase:
   
@@ -111,7 +116,7 @@ object Test9 extends App {
   
   
   /** Transforms a phase, adding its output annotation to the tree's HList under an arbitrary key. */
-  def recordify[F[_], A, K, L <: HList]
+  def recordify0[F[_], A, K, L <: HList]
     (phase: Phase[F, Unit, A], k: Witness)
     (implicit F: Traverse[F], upd: ops.record.Updater[L, FieldType[k.T, A]]):
     Phase[F, L, upd.Out] = 
@@ -128,7 +133,7 @@ object Test9 extends App {
   type sumT = wSum.T
   // ops.record.Selector[L, sumT]
   
-  val summedB = recordify[LogicalPlan, Int, sumT, HNil](p1, wSum)
+  val summedB = recordify0[LogicalPlan, Int, sumT, HNil](p1, wSum)
   
   val recSum1: Int = summedB(attrK(sum, HNil)).unFix.attr('sum)
   
@@ -137,7 +142,7 @@ object Test9 extends App {
   val wSilly = 'foo.witness
   type sillyT = FieldType[wSilly.T, Int]
   val sillyVal = ('foo ->> 0) :: HNil
-  val summedB2 = recordify[LogicalPlan, Int, wTotal.T, sillyT #:: HNil](p1, 'total)
+  val summedB2 = recordify0[LogicalPlan, Int, wTotal.T, sillyT #:: HNil](p1, 'total)
   val recSum2: Int = summedB2(attrK(sum, sillyVal)).unFix.attr('total)
   
   println(recSum1 + "; " + recSum2)
@@ -146,21 +151,63 @@ object Test9 extends App {
   println(summedB2(attrK(sum, sillyVal)).unFix.attr.keys)
   
 
-  // /** Transforms a phase consuming two inputs, adding its output annotation to the tree's HList under an arbitrary key. */
-  // def recordify2to1[F[_], A, B, C, KA, KB, KC, L <: HList]
-  //   (phase: Phase[F, (A, B), C], ka: Witness, kb: Witness, kc: Witness)
-  //   (implicit F: Traverse[F],
-  //     selA: ops.record.Selector[L, ka.T],
-  //     selB: ops.record.Selector[L, kb.T],
-  //     updC: ops.record.Updater[L, FieldType[kc.T, C]]):
-  //   Phase[F, L, updC.Out] =
-  // {
-  //   Phase { (attrL: Attr[F, L]) =>
-  //     val attrC: Attr[F, C] = phase(attrL.map(l => (l(ka): A, l.get(kb))))
-  //     val attrLC = unsafeZip2(attrL, attrC)
-  //     attrLC.map { case (l, c) => l.updated(kc, c)(updC) }
-  //   }
-  // }
+  /**
+   Transforms a phase consuming one input, found in the input list under 
+   the given key, adding its output annotation to the tree's HList under 
+   an arbitrary key.
+   */
+  def recordify1[F[_], A, B, KA, KB, L <: HList]
+    (phase: Phase[F, A, B], ka: Witness, kb: Witness)
+    (implicit F: Traverse[F],
+      selA: ops.record.Selector.Aux[L, ka.T, A],
+      updB: ops.record.Updater[L, FieldType[kb.T, B]]):
+    Phase[F, L, updB.Out] =
+  {
+    Phase { (attrL: Attr[F, L]) =>
+      val attrB: Attr[F, B] = phase(attrL.map(l => l(ka)))
+      val attrLB = unsafeZip2(attrL, attrB)
+      attrLB.map { case (l, b) => l.updated(kb, b)(updB) }
+    }
+  }
+
+  /**
+   Transforms a phase consuming two inputs, found in the input list under 
+   the given keys, adding its output annotation to the tree's HList under 
+   an arbitrary key.
+   */
+  def recordify2[F[_], A, B, C, KA, KB, KC, L <: HList]
+    (phase: Phase[F, (A, B), C], ka: Witness, kb: Witness, kc: Witness)
+    (implicit F: Traverse[F],
+      selA: ops.record.Selector.Aux[L, ka.T, A],
+      selB: ops.record.Selector.Aux[L, kb.T, B],
+      updC: ops.record.Updater[L, FieldType[kc.T, C]]):
+    Phase[F, L, updC.Out] =
+  {
+    Phase { (attrL: Attr[F, L]) =>
+      val attrC: Attr[F, C] = phase(attrL.map(l => (l(ka), l(kb))))
+      val attrLC = unsafeZip2(attrL, attrC)
+      attrLC.map { case (l, c) => l.updated(kc, c)(updC) }
+    }
+  }
+
+  val double = Phase[LogicalPlan, Int, Int] { _.map(_*2) }
+  
+  val wDouble = 'double.witness
+  
+  // val dp = recordify0(p1, wTotal) >>> recordify1(double, wTotal, wDouble)
+  val p1r = recordify0[LogicalPlan, Int, wTotal.T, HNil](p1, wTotal)
+  val p2r = p1r >>> recordify1(double, wTotal, wDouble)
+
+  val p2ra = p2r(attrK(sum, HNil))
+  println("p2ra: " + p2ra)
+  println("  keys: " + p2ra.unFix.attr.keys)
+  
+  val combine = Phase[LogicalPlan, (Int, Int), Int] { _.map(t => t._1 + t._2) }
+  
+  val p3r = p2r >>> recordify2(combine, wTotal, wDouble, 'triple.witness)
+  val p3ra = p3r(attrK(sum, HNil))
+  println("p3ra: " + p3ra)
+  println("  keys: " + p3ra.unFix.attr.keys)
 
   // import shapeless.syntax.std.tuple._
   //

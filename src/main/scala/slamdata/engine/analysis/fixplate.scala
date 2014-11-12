@@ -7,6 +7,10 @@ import Scalaz._
 
 import Id.Id
 
+import shapeless.{Data => _, :: => #::, _}
+import shapeless.syntax.singleton._
+import shapeless.record._
+
 import slamdata.engine.{RenderTree, Terminal, NonTerminal}
 
 sealed trait term {
@@ -691,6 +695,36 @@ sealed trait phases extends attr {
   }  
 
   def liftPhaseS[F[_], S, A, B](phase: Phase[F, A, B]): PhaseS[F, S, A, B] = liftPhase[({type f[X] = State[S, X]})#f, F, A, B](phase)
+
+
+  /**
+   Phase transformer that runs a phase taking no input annotations, and adds 
+   its output annotation to a shapeless record (tagged `HList`).
+  */
+  def recordPhaseM0[M[_], F[_], A, K, L <: HList]
+    (phase: PhaseM[M, F, Unit, A], k: Witness)
+    (implicit M: Functor[M], F: Traverse[F], upd: ops.record.Updater[L, FieldType[k.T, A]]):
+    PhaseM[M, F, L, upd.Out] =
+  {
+    PhaseM { (attrL: Attr[F, L]) =>
+      phase(attrL.map(_ => ())).map { (attrA: Attr[F, A]) =>
+        unsafeZip2(attrL, attrA).map { case (l, a) => l.updated(k, a)(upd) }
+      }
+    }
+  }
+  // This seems simpler, but doesn't type check:
+  // def recordPhaseM0[M[_], F[_], A, K, L <: HList]
+  //   (phase: PhaseM[M, F, Unit, A], k: Witness)
+  //   (implicit M: Functor[M], F: Traverse[F]):
+  //   PhaseM[M, F, L, A with KeyTag[k.T, A] #:: L] =
+  // {
+  //   PhaseM { (attrL: Attr[F, L]) =>
+  //     phase(attrL.map(_ => ())).map { (attrA: Attr[F, A]) =>
+  //       unsafeZip2(attrL, attrA).map { case (l, a) => (k.value ->> a) :: l }
+  //     }
+  //   }
+  // }
+
 
   implicit def PhaseMArrow[M[_], F[_]](implicit F: Traverse[F], M: Monad[M]) = new Arrow[({type f[a, b] = PhaseM[M, F, a, b]})#f] {
     type Arr[A, B] = PhaseM[M, F, A, B]
