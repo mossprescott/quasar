@@ -67,6 +67,15 @@ object MRA {
     }
 
     def id(id: DimId) = new Dims(Nil, id, Nil)
+
+    implicit val DimsRenderTree = new RenderTree[Dims] {
+      def render(v: Dims) = NonTerminal(
+        "",
+        v.contracts.map(c => Terminal(c.toString, List("Dims", "Contract"))) ++
+          List(Terminal(v.id.toString, List("Dims", "Id"))) ++
+          v.expands.map(e => Terminal(e.toString, List("Dims", "Expand"))),
+        List("Dims"))
+    }
   }
 
   sealed trait DimId {
@@ -219,33 +228,30 @@ object MRA {
   sealed trait DimExpand
   case object DimExpand extends DimExpand
 
-  def DimsPhase[A]: PhaseE[LogicalPlan, PlannerError, A, Dims] = lpBoundPhaseE {
+  def DimsPhase[A]: Phase[LogicalPlan, A, Dims] = LogicalPlan.optimalBoundSynthPara2Phase {
     type Output = Dims
 
-    liftPhaseE(Phase { (attr: Cofree[LogicalPlan,A]) =>
-      synthPara2(forget(attr)) { (node: LogicalPlan[(Term[LogicalPlan], Output)]) =>
-        node.fold[Output](
-          read      = Dims.set(_),
-          constant  = κ(Dims.Value),
-          join      = (left, right, tpe, rel, lproj, rproj) => ???,
-          invoke    = (func, args) =>  {
-                        val d = Dims.combineAll(args.map(_._2))
+    (node: LogicalPlan[(Term[LogicalPlan], Output)]) =>
+      node.fold[Output](
+        read      = Dims.set(_),
+        constant  = κ(Dims.Value),
+        join      = (left, right, tpe, rel, lproj, rproj) => ???,
+        invoke    = (func, args) =>  {
+                      val d = Dims.combineAll(args.map(_._2))
 
-                        import MappingType._
+                      import MappingType._
 
-                        func.mappingType match {
-                          case OneToOne       => d
-                          case OneToMany      => d.expand
-                          case OneToManyFlat  => d.flatten
-                          case ManyToOne      => d.aggregate
-                          case ManyToMany     => d
-                          case Squashing      => d.squash
-                        }
-                      },
-          free      = κ(Dims.Value),
-          let       = (_, _, in) => in._2
-        )
-      }
-    })
+                      func.mappingType match {
+                        case OneToOne       => d
+                        case OneToMany      => d.expand
+                        case OneToManyFlat  => d.flatten
+                        case ManyToOne      => d.aggregate
+                        case ManyToMany     => d
+                        case Squashing      => d.squash
+                      }
+                    },
+        free      = κ(Dims.Value),
+        let       = (_, _, in) => in._2
+      )
   }
 }

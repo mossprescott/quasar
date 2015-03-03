@@ -438,14 +438,15 @@ object MongoDbPlanner extends Planner[Workflow] with Conversions {
   def WorkflowPhase: PhaseS[
     LogicalPlan,
     NameGen,
-    (OutputM[PartialSelector[OutputM[WorkflowBuilder]]],
+    ((OutputM[PartialSelector[OutputM[WorkflowBuilder]]],
       OutputM[JsMacro]),
+        MRA.Dims),
     OutputM[WorkflowBuilder]] = optimalBoundPhaseS {
 
     import WorkflowBuilder._
 
     type PSelector = PartialSelector[OutputM[WorkflowBuilder]]
-    type Input  = (OutputM[PSelector], OutputM[JsMacro])
+    type Input  = ((OutputM[PSelector], OutputM[JsMacro]), MRA.Dims)
     type Output = M[WorkflowBuilder]
     type Ann    = Cofree[LogicalPlan, (Input, Error \/ WorkflowBuilder)]
 
@@ -485,9 +486,11 @@ object MongoDbPlanner extends Planner[Workflow] with Conversions {
     }
 
     val HasSelector: Ann => M[PSelector] =
-      ann => lift(ann.head._1._1)
+      ann => lift(ann.head._1._1._1)
 
-    val HasJs: Ann => M[JsMacro] = ann => lift(ann.head._1._2)
+    val HasJs: Ann => M[JsMacro] = ann => lift(ann.head._1._1._2)
+
+    val HasDims: Ann => M[MRA.Dims] = ann => emit(ann.head._1._2)
 
     val HasWorkflow: Ann => M[WorkflowBuilder] = ann => lift(ann.head._2)
 
@@ -789,7 +792,7 @@ object MongoDbPlanner extends Planner[Workflow] with Conversions {
   //               |
   //         WorkflowPhase
   val AllPhases: PhaseS[LogicalPlan, NameGen, Unit, Error \/ WorkflowBuilder] =
-    liftPhaseS(SelectorPhase[Unit, OutputM[WorkflowBuilder]] &&& JsExprPhase[Unit]) >>> WorkflowPhase
+    liftPhaseS(SelectorPhase[Unit, OutputM[WorkflowBuilder]] &&& JsExprPhase[Unit] &&& MRA.DimsPhase) >>> WorkflowPhase
 
   def plan(logical: Term[LogicalPlan]): OutputM[Workflow] = {
     val a: State[NameGen, Cofree[LogicalPlan, Error \/ WorkflowBuilder]] = AllPhases(attrUnit(logical))
