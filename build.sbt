@@ -117,7 +117,9 @@ lazy val oneJarSettings = {
 
 lazy val root = Project("root", file(".")) aggregate(core, web, admin, it) enablePlugins(AutomateHeaderPlugin)
 
-lazy val core = (project in file("core")) settings (oneJarSettings: _*) enablePlugins(AutomateHeaderPlugin, BuildInfoPlugin)
+lazy val coreGen = (project in file("core-gen")) enablePlugins(SbtTwirl)
+
+lazy val core = (project in file("core")) dependsOn (coreGen % "compile->run") settings (oneJarSettings: _*) enablePlugins(AutomateHeaderPlugin, BuildInfoPlugin)
 
 lazy val web = (project in file("web")) dependsOn (core % "test->test;compile->compile") settings (oneJarSettings: _*) enablePlugins(AutomateHeaderPlugin)
 
