@@ -4,6 +4,7 @@ import scala.collection.immutable.ListMap
 
 case class DataSchema(
   pkg: String,
+  imports: List[String],
   name: String,
   fixed: String,
   param: String,
@@ -17,6 +18,7 @@ sealed trait ParamType
 object ParamType {
   case class Simple(name: String) extends ParamType
   case object Rec extends ParamType
+  case class Generic(name: String) extends ParamType
 }
 
 case class Instance(
@@ -37,6 +39,7 @@ case class Instance(
   private def show(rec: String, pt: ParamType) = pt match {
     case ParamType.Simple(name) => name
     case ParamType.Rec => rec
+    case ParamType.Generic(name) => name + "[" + rec + "]"
   }
 
   def unapplyType(rec: String) = {

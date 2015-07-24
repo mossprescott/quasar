@@ -115,11 +115,46 @@ lazy val oneJarSettings = {
   ))
 }
 
+
+val dataCodeGenerator = TaskKey[Seq[File]]("data-code-generate", "Generate data type boilerplate")
+
+def runDataCodeGenerator(src: File, cp: Seq[File]): Seq[File] = {
+  val mainClass = "slamdata.engine.gen.DataGen"
+  val tmp = java.io.File.createTempFile("sources", ".txt")
+  val os = new java.io.FileOutputStream(tmp)
+
+  try {
+    val i = new Fork.ForkScala(mainClass).fork(None, Nil, cp,
+       Seq(src.toString),
+       None,
+       false,
+       CustomOutput(os)).exitValue()
+
+     if (i != 0) {
+       error("Trouble with code generator")
+     }
+  } finally {
+    os.close()
+  }
+  scala.io.Source.fromFile(tmp).getLines.map(f => file(f)).toList
+}
+
+val genSettings = Seq(
+  sourceGenerators in Compile <+= (dataCodeGenerator in Compile),
+
+  dataCodeGenerator in Compile <<=
+    (sourceManaged in Compile, dependencyClasspath in Runtime in coreGen).map {
+      (src, cp) => runDataCodeGenerator(src, cp.files)
+    }
+)
+
+
+
 lazy val root = Project("root", file(".")) aggregate(core, web, admin, it) enablePlugins(AutomateHeaderPlugin)
 
-lazy val coreGen = (project in file("core-gen")) enablePlugins(SbtTwirl)
+lazy val coreGen = (project in file("coreGen")) enablePlugins(AutomateHeaderPlugin, SbtTwirl)
 
-lazy val core = (project in file("core")) dependsOn (coreGen % "compile->run") settings (oneJarSettings: _*) enablePlugins(AutomateHeaderPlugin, BuildInfoPlugin)
+lazy val core = (project in file("core")) settings (oneJarSettings ++ genSettings: _*) enablePlugins(AutomateHeaderPlugin, BuildInfoPlugin)
 
 lazy val web = (project in file("web")) dependsOn (core % "test->test;compile->compile") settings (oneJarSettings: _*) enablePlugins(AutomateHeaderPlugin)
 
