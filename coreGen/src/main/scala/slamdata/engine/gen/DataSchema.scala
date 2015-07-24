@@ -23,7 +23,6 @@ object ParamType {
 
 case class Instance(
   name: String,
-  syntax: String,
   params: ListMap[String, ParamType])
 {
   def matchResult = params.toList match {

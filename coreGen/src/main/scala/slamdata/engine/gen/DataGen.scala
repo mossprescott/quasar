@@ -33,10 +33,10 @@ object DataGen extends App {
     "ExpressionGen",
     "A",
     List(
-      Instance("Include", "$instance", ListMap()),
-      Instance("Var",     "$var",      ListMap("docVar" -> ParamType.Simple("ExprOp.DocVar"))),
-      Instance("And",     "$and",      ListMap("values" -> ParamType.Generic("NonEmptyList"))),
-      Instance("Add",     "$add",      ListMap("left" -> ParamType.Rec, "right" -> ParamType.Rec))))
+      Instance("$include", ListMap()),
+      Instance("$var",     ListMap("docVar" -> ParamType.Simple("ExprOp.DocVar"))),
+      Instance("$and",     ListMap("values" -> ParamType.Generic("NonEmptyList"))),
+      Instance("$add",     ListMap("left" -> ParamType.Rec, "right" -> ParamType.Rec))))
 
   val groupOp = DataSchema(
     "slamdata.engine",
@@ -45,14 +45,14 @@ object DataGen extends App {
     "AccumulatorGen",
     "A",
     List(
-      Instance("AddToSet", "$addToSet", ListMap("value" -> ParamType.Rec)),
-      Instance("Push",     "$push",     ListMap("value" -> ParamType.Rec)),
-      Instance("First",    "$first",    ListMap("value" -> ParamType.Rec)),
-      Instance("Last",     "$last",     ListMap("value" -> ParamType.Rec)),
-      Instance("Max",      "$max",      ListMap("value" -> ParamType.Rec)),
-      Instance("Min",      "$min",      ListMap("value" -> ParamType.Rec)),
-      Instance("Avg",      "$avg",      ListMap("value" -> ParamType.Rec)),
-      Instance("Sum",      "$sum",      ListMap("value" -> ParamType.Rec))))
+      Instance("$addToSet", ListMap("value" -> ParamType.Rec)),
+      Instance("$push",     ListMap("value" -> ParamType.Rec)),
+      Instance("$first",    ListMap("value" -> ParamType.Rec)),
+      Instance("$last",     ListMap("value" -> ParamType.Rec)),
+      Instance("$max",      ListMap("value" -> ParamType.Rec)),
+      Instance("$min",      ListMap("value" -> ParamType.Rec)),
+      Instance("$avg",      ListMap("value" -> ParamType.Rec)),
+      Instance("$sum",      ListMap("value" -> ParamType.Rec))))
 
 
   List(exprOp, groupOp).foreach { s =>

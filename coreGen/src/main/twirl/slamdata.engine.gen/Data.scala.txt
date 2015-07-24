@@ -18,19 +18,17 @@ object @(schema.name) {
   }
 
   object DSL {@for(inst <- schema.instances) {
-    object @(inst.syntax) {
-      def apply(@inst.paramArgs(schema.fixed)): @schema.fixed = Term(@(inst.syntax)F(@inst.params.map(_._1).mkString(", ")))
-      def unapply(obj: @(schema.fixed)): @(inst.unapplyType(schema.fixed)) = @(inst.syntax)F.unapply(obj.unFix)
+    object @(inst.name) {
+      def apply(@inst.paramArgs(schema.fixed)): @schema.fixed = Term(@(inst.name)F(@inst.params.map(_._1).mkString(", ")))
+      def unapply(obj: @(schema.fixed)): @(inst.unapplyType(schema.fixed)) = @(inst.name)F.unapply(obj.unFix)
     }
   }}
 
-  import Types._
-
 @for(inst <- schema.instances) {
-  object @(inst.syntax)F {
-    def apply@(schema.paramDecl)(@inst.paramArgs(schema.param)): @(schema.decl) = @(inst.name)(@inst.params.map(_._1).mkString(", "))
+  object @(inst.name)F {
+    def apply@(schema.paramDecl)(@inst.paramArgs(schema.param)): @(schema.decl) = Types.@(inst.name)(@inst.params.map(_._1).mkString(", "))
     def unapply@(schema.paramDecl)(obj: @(schema.decl)): @(inst.unapplyType(schema.param)) = obj match {
-      case @(inst.name)(@inst.params.map(_._1).mkString(", ")) => @inst.matchResult
+      case Types.@(inst.name)(@inst.params.map(_._1).mkString(", ")) => @inst.matchResult
       case _ => @inst.noMatchResult
     }
   }

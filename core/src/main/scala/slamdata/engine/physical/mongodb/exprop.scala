@@ -506,3 +506,22 @@ object ExprOp {
     def rhs = Bson.Arr(expr.bson :: replacement.bson :: Nil)
   }
 }
+
+trait ExprOpFunctions {
+  import ExprOpGen._
+
+  private def bsonArr(op: String, elems: Bson*): Bson = ???
+
+  // Implemented this  way, exhaustiveness checking works:
+  def uglyButCheckedBsonƒ(expr: ExprOpGen[Bson]): Bson = expr match {
+    case Types.$include() => Bson.Bool(true)
+    case Types.$var(dv) => dv.bson
+    case Types.$and(values) => bsonArr("$and", values.list: _*)
+    case Types.$add(l, r)   => bsonArr("$add", l, r)
+  }
+
+  // This way, anything goes:
+  def bsonƒ: ExprOpGen[Bson] => Bson = {
+    case $includeF() => Bson.Bool(true)
+  }
+}
