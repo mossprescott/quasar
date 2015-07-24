@@ -507,12 +507,12 @@ object ExprOp {
   }
 }
 
-trait ExprOpFunctions {
+object ExprOpFunctions {
   import ExprOpGen._
 
   private def bsonArr(op: String, elems: Bson*): Bson = ???
 
-  // Implemented this  way, exhaustiveness checking works:
+  // Implemented this way, exhaustiveness checking works:
   def uglyButCheckedBsonƒ(expr: ExprOpGen[Bson]): Bson = expr match {
     case Types.$include() => Bson.Bool(true)
     case Types.$var(dv) => dv.bson
@@ -523,5 +523,56 @@ trait ExprOpFunctions {
   // This way, anything goes:
   def bsonƒ: ExprOpGen[Bson] => Bson = {
     case $includeF() => Bson.Bool(true)
+    // oops, guess I'll find out at runtime that I forgot the rest of the cases.
   }
+
+  // NB: not yet generated (will be, by shapeless, at some point)
+  implicit val ExprOpTraverse = new Traverse[ExprOpGen] {
+    def traverseImpl[G[_], A, B](fa: ExprOpGen[A])(f: A => G[B])(implicit G: Applicative[G]):
+        G[ExprOpGen[B]] =
+      fa match {
+        case $includeF()   => G.point($includeF())
+        case $varF(dv)     => G.point($varF(dv))
+        case $addF(l, r)   => (f(l) |@| f(r))($addF(_, _))
+        case $andF(values) => values.traverse(f).map($andF(_))
+      }
+  }
+}
+// NB: would like to call this ExprOp(Gen) and have the generated companion object
+// have some name like ExprOp(Types), but the (sealed) trait and its companion
+// have to reside in the same file, so that doesn't work.
+// object ExprOpGenT extends ExprOpGenTypes with ExprOpFunctions
+
+trait AccumOpFunctions {
+  // NB: not defined in the generated code. It's not inherent to the type, you might say.
+  type Accumulator = AccumOpGen[ExprOpGen.ExpressionGen]
+
+  import AccumOpGen._
+  import ExprOpFunctions._
+
+  def groupBsonƒ: AccumOpGen[Bson] => Bson = {
+    case $addToSet(value) => Bson.Doc(ListMap("$addToSet" -> value))
+    // NB: no exhaustiveness checking
+  }
+
+  def groupBson(g: Accumulator) = groupBsonƒ(g.map(_.cata(bsonƒ)))
+
+  // NB: not yet generated (will be, by shapeless, at some point)
+  implicit val AccumOpGenTraverse = new Traverse[AccumOpGen] {
+    def traverseImpl[G[_], A, B](fa: AccumOpGen[A])(f: A => G[B])(implicit G: Applicative[G]):
+        G[AccumOpGen[B]] =
+      fa match {
+        case $addToSet(value) => G.map(f(value))($addToSet(_))
+        case $avg(value)      => G.map(f(value))($avg(_))
+        case $first(value)    => G.map(f(value))($first(_))
+        case $last(value)     => G.map(f(value))($last(_))
+        case $max(value)      => G.map(f(value))($max(_))
+        case $min(value)      => G.map(f(value))($min(_))
+        case $push(value)     => G.map(f(value))($push(_))
+        case $sum(value)      => G.map(f(value))($sum(_))
+      }
+    }
+
+  import ExprOpGen.DSL._
+  val dumbTest: Accumulator = $push($var(ExprOp.DocField(BsonField.Name("foo"))))
 }

@@ -2,7 +2,7 @@ package slamdata.engine.gen
 
 import scala.collection.immutable.ListMap
 
-case class DataSchema(
+case class FixpointSchema(
   pkg: String,
   imports: List[String],
   name: String,
@@ -21,7 +21,7 @@ object ParamType {
   case class Generic(name: String) extends ParamType
 }
 
-case class Instance(
+case class Instance (
   name: String,
   params: ListMap[String, ParamType])
 {
@@ -30,6 +30,7 @@ case class Instance(
     case (n, _) :: Nil => s"Some($n)"
     case ps            => "Some((" + ps.map(_._1).mkString(", ") + "))"
   }
+
   def noMatchResult = params.toList match {
     case Nil => "false"
     case _   => "None"
@@ -54,4 +55,15 @@ case class Instance(
       case (n, t) => n + ": " + show(rec, t)
     }.mkString(", ")
   }
+}
+
+case class DataSchema(
+  pkg: String,
+  imports: List[String],
+  name: String,
+  param: String,
+  instances: List[Instance])
+{
+  def decl = name + paramDecl
+  def paramDecl = "[" + param + "]"
 }

@@ -3,6 +3,7 @@ package slamdata.engine.gen
 import scala.collection.immutable.ListMap
 
 import slamdata.engine.gen.txt.Data
+import slamdata.engine.gen.txt.Fixpoint
 
 /**
  * Inspired by https://github.com/dmitriy-yefremov/scala-code-gen
@@ -10,11 +11,13 @@ import slamdata.engine.gen.txt.Data
 object DataGen extends App {
 
   def generate(schema: DataSchema): String = Data(schema).toString()
+  def generate(schema: FixpointSchema): String = Fixpoint(schema).toString()
 
-  def write(schema: DataSchema) = {
-    val content = generate(schema)
+  def handle(schema: DataSchema) = write(schema.name, generate(schema))
+  def handle(schema: FixpointSchema) = write(schema.name, generate(schema))
 
-    val f = new java.io.File(args(0) + "/" + schema.name + ".scala")
+  def write(name: String, content: String) = {
+    val f = new java.io.File(args(0) + "/" + name + ".scala")
 
     f.getParentFile.mkdirs()
 
@@ -23,10 +26,10 @@ object DataGen extends App {
     w.write(content)
     w.close()
 
-    f
+    println(f.getAbsolutePath)
   }
 
-  val exprOp = DataSchema(
+  val exprOp = FixpointSchema(
     "slamdata.engine.physical.mongodb",
     List("scalaz._"),
     "ExprOpGen",
@@ -39,10 +42,9 @@ object DataGen extends App {
       Instance("$add",     ListMap("left" -> ParamType.Rec, "right" -> ParamType.Rec))))
 
   val groupOp = DataSchema(
-    "slamdata.engine",
+    "slamdata.engine.physical.mongodb",
     List(),
     "AccumOpGen",
-    "AccumulatorGen",
     "A",
     List(
       Instance("$addToSet", ListMap("value" -> ParamType.Rec)),
@@ -55,7 +57,6 @@ object DataGen extends App {
       Instance("$sum",      ListMap("value" -> ParamType.Rec))))
 
 
-  List(exprOp, groupOp).foreach { s =>
-    println(write(s).getAbsolutePath())
-  }
+  handle(exprOp)
+  handle(groupOp)
 }
