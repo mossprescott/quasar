@@ -30,19 +30,19 @@ object DataGen extends App {
   }
 
   val exprOp = FixpointSchema(
-    "slamdata.engine.physical.mongodb",
-    List("scalaz._"),
+    "slamdata.engine.physical.mongodb.exprop",
+    List("scalaz._", "slamdata.engine.physical.mongodb.ExprOp.DocVar"),
     "ExprOpGen",
-    "ExpressionGen",
+    // "ExpressionGen",
     "A",
     List(
       Instance("$include", ListMap()),
-      Instance("$var",     ListMap("docVar" -> ParamType.Simple("ExprOp.DocVar"))),
+      Instance("$var",     ListMap("docVar" -> ParamType.Simple("DocVar"))),
       Instance("$and",     ListMap("values" -> ParamType.Generic("NonEmptyList"))),
       Instance("$add",     ListMap("left" -> ParamType.Rec, "right" -> ParamType.Rec))))
 
   val groupOp = DataSchema(
-    "slamdata.engine.physical.mongodb",
+    "slamdata.engine.physical.mongodb.accumop",
     List(),
     "AccumOpGen",
     "A",

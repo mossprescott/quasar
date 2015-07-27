@@ -9,17 +9,16 @@ package @schema.pkg
 
 sealed trait @(schema.decl)
 
-object @(schema.name) {
-  object Types {@for(inst <- schema.instances) {
-    final case class @(inst.name)@(schema.paramDecl)(@inst.paramArgs(schema.param)) extends @(schema.decl)}
-  }
+object Types {@for(inst <- schema.instances) {
+  final case class @(inst.name)@(schema.paramDecl)(@inst.paramArgs(schema.param)) extends @(schema.decl)}
+}
 
 @for(inst <- schema.instances) {
-  object @(inst.name) {
-    def apply@(schema.paramDecl)(@inst.paramArgs(schema.param)): @(schema.decl) = Types.@(inst.name)(@inst.params.map(_._1).mkString(", "))
-    def unapply@(schema.paramDecl)(obj: @(schema.decl)): @(inst.unapplyType(schema.param)) = obj match {
-      case Types.@(inst.name)(@inst.params.map(_._1).mkString(", ")) => @inst.matchResult
-      case _ => @inst.noMatchResult
-    }
+object @(inst.name) {
+  def apply@(schema.paramDecl)(@inst.paramArgs(schema.param)): @(schema.decl) = Types.@(inst.name)(@inst.params.map(_._1).mkString(", "))
+  def unapply@(schema.paramDecl)(obj: @(schema.decl)): @(inst.unapplyType(schema.param)) = obj match {
+    case Types.@(inst.name)(@inst.params.map(_._1).mkString(", ")) => @inst.matchResult
+    case _ => @inst.noMatchResult
   }
-}}
+}
+}

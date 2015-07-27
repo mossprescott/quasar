@@ -507,8 +507,10 @@ object ExprOp {
   }
 }
 
-object ExprOpFunctions {
-  import ExprOpGen._
+package object exprop {
+  // import exprop.ExprOpGen._
+
+  type Expression = Term[ExprOpGen]
 
   private def bsonArr(op: String, elems: Bson*): Bson = ???
 
@@ -523,6 +525,7 @@ object ExprOpFunctions {
   // This way, anything goes:
   def bsonƒ: ExprOpGen[Bson] => Bson = {
     case $includeF() => Bson.Bool(true)
+    case $varF(dv)   => dv.bson
     // oops, guess I'll find out at runtime that I forgot the rest of the cases.
   }
 
@@ -538,20 +541,17 @@ object ExprOpFunctions {
       }
   }
 }
-// NB: would like to call this ExprOp(Gen) and have the generated companion object
-// have some name like ExprOp(Types), but the (sealed) trait and its companion
-// have to reside in the same file, so that doesn't work.
-// object ExprOpGenT extends ExprOpGenTypes with ExprOpFunctions
 
-trait AccumOpFunctions {
-  // NB: not defined in the generated code. It's not inherent to the type, you might say.
-  type Accumulator = AccumOpGen[ExprOpGen.ExpressionGen]
+package object accumop {
+  type Accumulator = AccumOpGen[exprop.Expression]
 
-  import AccumOpGen._
-  import ExprOpFunctions._
+  import exprop._
 
   def groupBsonƒ: AccumOpGen[Bson] => Bson = {
     case $addToSet(value) => Bson.Doc(ListMap("$addToSet" -> value))
+
+    case $push(value)     => Bson.Doc(ListMap("push" -> value))
+
     // NB: no exhaustiveness checking
   }
 
@@ -572,7 +572,13 @@ trait AccumOpFunctions {
         case $sum(value)      => G.map(f(value))($sum(_))
       }
     }
+}
 
-  import ExprOpGen.DSL._
-  val dumbTest: Accumulator = $push($var(ExprOp.DocField(BsonField.Name("foo"))))
+object DumbTest extends App {
+  import exprop.DSL._
+  import accumop._
+
+  val dumbTest = $push($var(ExprOp.DocField(BsonField.Name("foo"))))
+  val bson = groupBson(dumbTest)
+  println(bson)
 }

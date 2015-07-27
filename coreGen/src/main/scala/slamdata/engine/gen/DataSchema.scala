@@ -6,12 +6,13 @@ case class FixpointSchema(
   pkg: String,
   imports: List[String],
   name: String,
-  fixed: String,
+  // fixed: String,
   param: String,
   instances: List[Instance])
 {
   def decl = name + paramDecl
   def paramDecl = "[" + param + "]"
+  def fixed = "Term[" + name + "]"
 }
 
 sealed trait ParamType

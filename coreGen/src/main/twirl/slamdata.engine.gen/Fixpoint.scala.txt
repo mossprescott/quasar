@@ -8,26 +8,23 @@ import slamdata.engine.analysis.fixplate.{Term}
 
 sealed trait @(schema.decl)
 
-object @(schema.name) {
-  type @schema.fixed = Term[@schema.name]
+object Types {@for(inst <- schema.instances) {
+  final case class @(inst.name)@(schema.paramDecl)(@inst.paramArgs(schema.param)) extends @(schema.decl)}
+}
 
-  object Types {@for(inst <- schema.instances) {
-    final case class @(inst.name)@(schema.paramDecl)(@inst.paramArgs(schema.param)) extends @(schema.decl)}
-  }
-
-  object DSL {@for(inst <- schema.instances) {
-    object @(inst.name) {
-      def apply(@inst.paramArgs(schema.fixed)): @schema.fixed = Term(@(inst.name)F(@inst.params.map(_._1).mkString(", ")))
-      def unapply(obj: @(schema.fixed)): @(inst.unapplyType(schema.fixed)) = @(inst.name)F.unapply(obj.unFix)
-    }
-  }}
-
-@for(inst <- schema.instances) {
-  object @(inst.name)F {
-    def apply@(schema.paramDecl)(@inst.paramArgs(schema.param)): @(schema.decl) = Types.@(inst.name)(@inst.params.map(_._1).mkString(", "))
-    def unapply@(schema.paramDecl)(obj: @(schema.decl)): @(inst.unapplyType(schema.param)) = obj match {
-      case Types.@(inst.name)(@inst.params.map(_._1).mkString(", ")) => @inst.matchResult
-      case _ => @inst.noMatchResult
-    }
+object DSL {@for(inst <- schema.instances) {
+  object @(inst.name) {
+    def apply(@inst.paramArgs(schema.fixed)): @schema.fixed = Term(@(inst.name)F(@inst.params.map(_._1).mkString(", ")))
+    def unapply(obj: @(schema.fixed)): @(inst.unapplyType(schema.fixed)) = @(inst.name)F.unapply(obj.unFix)
   }
 }}
+
+@for(inst <- schema.instances) {
+object @(inst.name)F {
+  def apply@(schema.paramDecl)(@inst.paramArgs(schema.param)): @(schema.decl) = Types.@(inst.name)(@inst.params.map(_._1).mkString(", "))
+  def unapply@(schema.paramDecl)(obj: @(schema.decl)): @(inst.unapplyType(schema.param)) = obj match {
+    case Types.@(inst.name)(@inst.params.map(_._1).mkString(", ")) => @inst.matchResult
+    case _ => @inst.noMatchResult
+  }
+}
+}
