@@ -1,11 +1,6 @@
 package slamdata.engine.physical.mongodb
 
-import slamdata.engine._
-
-import scalaz._
-import Scalaz._
-
-import collection.immutable.ListMap
+import slamdata.Predef._
 
 import org.specs2.mutable._
 

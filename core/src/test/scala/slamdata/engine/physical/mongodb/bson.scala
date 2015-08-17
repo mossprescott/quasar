@@ -1,19 +1,15 @@
 package slamdata.engine.physical.mongodb
 
-import collection.JavaConverters._
+import slamdata.Predef._
+import slamdata.fp._
+import slamdata.engine._
+import slamdata.engine.javascript._
+
+import scala.collection.JavaConverters._
 
 import org.specs2.mutable._
 import org.specs2.ScalaCheck
-import scala.collection.immutable.ListMap
-
-import scalaz._
-import Scalaz._
-
 import org.threeten.bp._
-
-import slamdata.engine._
-import slamdata.engine.fp._
-import slamdata.engine.javascript._
 
 class BsonSpecs extends Specification with ScalaCheck {
   import Bson._
@@ -40,7 +36,7 @@ class BsonSpecs extends Specification with ScalaCheck {
       // Simulating a type MongoDB uses that we know nothing about:
       class Foo
 
-      val native = new org.bson.Document(Map[String, Object]("a" -> new Foo()).asJava)
+      val native = new org.bson.Document(Map[String, java.lang.Object]("a" -> new Foo()).asJava)
 
       Bson.fromRepr(native) must_== Doc(ListMap("a" -> Undefined))
     }
@@ -68,6 +64,24 @@ class BsonSpecs extends Specification with ScalaCheck {
 
       // (fromRepr >=> repr >=> fromRepr) == fromRepr
       fromRepr(fromRepr(wrapped).repr) must_== fromRepr(wrapped)
+    }
+  }
+
+  "toJs" should {
+    import BsonGen._
+
+    "correspond to Data.toJs where toData is defined" ! org.scalacheck.Arbitrary(simpleGen) { (bson: Bson) =>
+      val data = BsonCodec.toData(bson)
+      (data != Data.NA) ==> {
+        data match {
+          case Data.Int(x) =>
+            // NB: encoding int as Data loses size info
+            (bson.toJs must_== JsCore.Call(JsCore.Ident("NumberInt").fix, List(data.toJs)).fix.toJs) or
+              (bson.toJs must_== JsCore.Call(JsCore.Ident("NumberLong").fix, List(data.toJs)).fix.toJs)
+          case _ =>
+            bson.toJs must_== data.toJs.toJs
+        }
+      }
     }
   }
 }

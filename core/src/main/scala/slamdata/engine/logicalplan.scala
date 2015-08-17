@@ -1,17 +1,30 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine
 
-import collection.immutable.Map
-
-import scalaz._
-import Scalaz._
-
-import slamdata.engine.fp._
+import slamdata.Predef._
+import slamdata.{RenderTree, Terminal, NonTerminal}
+import slamdata.recursionschemes._, Recursive.ops._
+import slamdata.fp._
 import slamdata.engine.fs.Path
 
-import slamdata.engine.analysis._
-import fixplate._
+import scalaz._; import Scalaz._
 
-sealed trait LogicalPlan[+A]
+sealed trait LogicalPlan[A]
 object LogicalPlan {
   import slamdata.engine.std.StdLib._
   import identity._
@@ -21,12 +34,10 @@ object LogicalPlan {
   implicit val LogicalPlanTraverse = new Traverse[LogicalPlan] {
     def traverseImpl[G[_], A, B](fa: LogicalPlan[A])(f: A => G[B])(implicit G: Applicative[G]): G[LogicalPlan[B]] = {
       fa match {
-        case x @ ReadF(_) => G.point(x)
-        case x @ ConstantF(_) => G.point(x)
-        case JoinF(left, right, tpe, rel, lproj, rproj) =>
-          G.apply4(f(left), f(right), f(lproj), f(rproj))(JoinF(_, _, tpe, rel, _, _))
+        case ReadF(coll) => G.point(ReadF(coll))
+        case ConstantF(data) => G.point(ConstantF(data))
         case InvokeF(func, values) => G.map(Traverse[List].sequence(values.map(f)))(InvokeF(func, _))
-        case x @ FreeF(_) => G.point(x)
+        case FreeF(v) => G.point(FreeF(v))
         case LetF(ident, form0, in0) =>
           G.apply2(f(form0), f(in0))(LetF(ident, _, _))
       }
@@ -34,24 +45,20 @@ object LogicalPlan {
 
     override def map[A, B](v: LogicalPlan[A])(f: A => B): LogicalPlan[B] = {
       v match {
-        case x @ ReadF(_) => x
-        case x @ ConstantF(_) => x
-        case JoinF(left, right, tpe, rel, lproj, rproj) =>
-          JoinF(f(left), f(right), tpe, rel, f(lproj), f(rproj))
+        case ReadF(coll) => ReadF(coll)
+        case ConstantF(data) => ConstantF(data)
         case InvokeF(func, values) => InvokeF(func, values.map(f))
-        case x @ FreeF(_) => x
+        case FreeF(v) => FreeF(v)
         case LetF(ident, form, in) => LetF(ident, f(form), f(in))
       }
     }
 
     override def foldMap[A, B](fa: LogicalPlan[A])(f: A => B)(implicit F: Monoid[B]): B = {
       fa match {
-        case x @ ReadF(_) => F.zero
-        case x @ ConstantF(_) => F.zero
-        case JoinF(left, right, tpe, rel, lproj, rproj) =>
-          F.append(F.append(f(left), f(right)), F.append(f(lproj), f(rproj)))
+        case ReadF(_) => F.zero
+        case ConstantF(_) => F.zero
         case InvokeF(func, values) => Foldable[List].foldMap(values)(f)
-        case x @ FreeF(_) => F.zero
+        case FreeF(_) => F.zero
         case LetF(_, form, in) => {
           F.append(f(form), f(in))
         }
@@ -60,34 +67,30 @@ object LogicalPlan {
 
     override def foldRight[A, B](fa: LogicalPlan[A], z: => B)(f: (A, => B) => B): B = {
       fa match {
-        case x @ ReadF(_) => z
-        case x @ ConstantF(_) => z
-        case JoinF(left, right, tpe, rel, lproj, rproj) =>
-          f(left, f(right, f(lproj, f(rproj, z))))
+        case ReadF(_) => z
+        case ConstantF(_) => z
         case InvokeF(func, values) => Foldable[List].foldRight(values, z)(f)
-        case x @ FreeF(_) => z
+        case FreeF(_) => z
         case LetF(ident, form, in) => f(form, f(in, z))
       }
     }
   }
   implicit val RenderTreeLogicalPlan: RenderTree[LogicalPlan[_]] = new RenderTree[LogicalPlan[_]] {
-    // Note: these are all terminals; the wrapping Term or Cofree will use these to build nodes with children.
-    override def render(v: LogicalPlan[_]) = v match {
-      case ReadF(name)                 => Terminal(name.pathname,             List("LogicalPlan", "Read"))
-      case ConstantF(data)             => Terminal(data.toString,             List("LogicalPlan", "Constant"))
-      case JoinF(_, _, tpe, rel, _, _) => Terminal(tpe.toString + ", " + rel, List("LogicalPlan", "Join"))
-      case InvokeF(func, _     )       => Terminal(func.name,                 List("LogicalPlan", "Invoke", func.mappingType.toString))
-      case FreeF(name)                 => Terminal(name.toString,             List("LogicalPlan", "Free"))
-      case LetF(ident, _, _)           => Terminal(ident.toString,            List("LogicalPlan", "Let"))
+    val nodeType = "LogicalPlan" :: Nil
+
+    // Note: these are all terminals; the wrapping Fix or Cofree will use these to build nodes with children.
+    def render(v: LogicalPlan[_]) = v match {
+      case ReadF(name)                 => Terminal("Read" :: nodeType, Some(name.pathname))
+      case ConstantF(data)             => Terminal("Constant" :: nodeType, Some(data.toString))
+      case InvokeF(func, _     )       => Terminal(func.mappingType.toString :: "Invoke" :: nodeType, Some(func.name))
+      case FreeF(name)                 => Terminal("Free" :: nodeType, Some(name.toString))
+      case LetF(ident, _, _)           => Terminal("Let" :: nodeType, Some(ident.toString))
     }
   }
-  implicit val EqualFLogicalPlan = new fp.EqualF[LogicalPlan] {
+  implicit val EqualFLogicalPlan = new EqualF[LogicalPlan] {
     def equal[A](v1: LogicalPlan[A], v2: LogicalPlan[A])(implicit A: Equal[A]): Boolean = (v1, v2) match {
       case (ReadF(n1), ReadF(n2)) => n1 == n2
       case (ConstantF(d1), ConstantF(d2)) => d1 == d2
-      case (JoinF(l1, r1, tpe1, rel1, lproj1, rproj1),
-            JoinF(l2, r2, tpe2, rel2, lproj2, rproj2)) =>
-        A.equal(l1, l2) && A.equal(r1, r2) && A.equal(lproj1, lproj2) && A.equal(rproj1, rproj2) && tpe1 == tpe2
       case (InvokeF(f1, v1), InvokeF(f2, v2)) => Equal[List[A]].equal(v1, v2) && f1 == f2
       case (FreeF(n1), FreeF(n2)) => n1 == n2
       case (LetF(ident1, form1, in1), LetF(ident2, form2, in2)) =>
@@ -96,33 +99,21 @@ object LogicalPlan {
     }
   }
 
-  case class ReadF(path: Path) extends LogicalPlan[Nothing] {
+  final case class ReadF[A](path: Path) extends LogicalPlan[A] {
     override def toString = s"""Read(Path("${path.simplePathname}"))"""
   }
   object Read {
-    def apply(path: Path): Term[LogicalPlan] =
-      Term[LogicalPlan](new ReadF(path))
+    def apply(path: Path): Fix[LogicalPlan] =
+      Fix[LogicalPlan](new ReadF(path))
   }
 
-  case class ConstantF(data: Data) extends LogicalPlan[Nothing]
+  final case class ConstantF[A](data: Data) extends LogicalPlan[A]
   object Constant {
-    def apply(data: Data): Term[LogicalPlan] =
-      Term[LogicalPlan](ConstantF(data))
+    def apply(data: Data): Fix[LogicalPlan] =
+      Fix[LogicalPlan](ConstantF(data))
   }
 
-  case class JoinF[A](left: A, right: A,
-                               joinType: JoinType, joinRel: Mapping,
-                               leftProj: A, rightProj: A) extends LogicalPlan[A] {
-    override def toString = s"Join($left, $right, $joinType, $joinRel, $leftProj, $rightProj)"
-  }
-  object Join {
-    def apply(left: Term[LogicalPlan], right: Term[LogicalPlan],
-               joinType: JoinType, joinRel: Mapping,
-               leftProj: Term[LogicalPlan], rightProj: Term[LogicalPlan]): Term[LogicalPlan] =
-      Term[LogicalPlan](JoinF(left, right, joinType, joinRel, leftProj, rightProj))
-  }
-
-  case class InvokeF[A](func: Func, values: List[A]) extends LogicalPlan[A] {
+  final case class InvokeF[A](func: Func, values: List[A]) extends LogicalPlan[A] {
     override def toString = {
       val funcName = if (func.name(0).isLetter) func.name.split('_').map(_.toLowerCase.capitalize).mkString
                       else "\"" + func.name + "\""
@@ -130,20 +121,20 @@ object LogicalPlan {
     }
   }
   object Invoke {
-    def apply(func: Func, values: List[Term[LogicalPlan]]): Term[LogicalPlan] =
-      Term[LogicalPlan](InvokeF(func, values))
+    def apply(func: Func, values: List[Fix[LogicalPlan]]): Fix[LogicalPlan] =
+      Fix[LogicalPlan](InvokeF(func, values))
   }
 
-  case class FreeF(name: Symbol) extends LogicalPlan[Nothing]
+  final case class FreeF[A](name: Symbol) extends LogicalPlan[A]
   object Free {
-    def apply(name: Symbol): Term[LogicalPlan] =
-      Term[LogicalPlan](FreeF(name))
+    def apply(name: Symbol): Fix[LogicalPlan] =
+      Fix[LogicalPlan](FreeF(name))
   }
 
-  case class LetF[A](let: Symbol, form: A, in: A) extends LogicalPlan[A]
+  final case class LetF[A](let: Symbol, form: A, in: A) extends LogicalPlan[A]
   object Let {
-    def apply(let: Symbol, form: Term[LogicalPlan], in: Term[LogicalPlan]): Term[LogicalPlan] =
-      Term[LogicalPlan](LetF(let, form, in))
+    def apply(let: Symbol, form: Fix[LogicalPlan], in: Fix[LogicalPlan]): Fix[LogicalPlan] =
+      Fix[LogicalPlan](LetF(let, form, in))
   }
 
   implicit val LogicalPlanUnzip = new Unzip[LogicalPlan] {
@@ -155,13 +146,13 @@ object LogicalPlan {
 
       def initial[A] = Map[Symbol, A]()
 
-      def bindings[A](t: LogicalPlan[Term[LogicalPlan]], b: G[A])(f: LogicalPlan[Term[LogicalPlan]] => A): G[A] =
+      def bindings[A](t: LogicalPlan[Fix[LogicalPlan]], b: G[A])(f: LogicalPlan[Fix[LogicalPlan]] => A): G[A] =
         t match {
           case LetF(ident, form, _) => b + (ident -> f(form.unFix))
           case _                    => b
         }
 
-      def subst[A](t: LogicalPlan[Term[LogicalPlan]], b: G[A]): Option[A] =
+      def subst[A](t: LogicalPlan[Fix[LogicalPlan]], b: G[A]): Option[A] =
         t match {
           case FreeF(symbol) => b.get(symbol)
           case _             => None
@@ -174,7 +165,7 @@ object LogicalPlan {
   }
 
   def freshName[F[_]: Functor: Foldable](
-    prefix: String, plans: F[Term[LogicalPlan]]):
+    prefix: String, plans: F[Fix[LogicalPlan]]):
       Symbol = {
     val existingNames = plans.map(_.cata(namesƒ)).fold
     def loop(pre: String): Symbol =
@@ -185,9 +176,7 @@ object LogicalPlan {
     loop(prefix)
   }
 
-  val shapeƒ: LogicalPlan[(Term[LogicalPlan], Option[List[Term[LogicalPlan]]])] => Option[List[Term[LogicalPlan]]] = {
-    case JoinF(left, right, _, _, _, _) =>
-      List(left._2, right._2).sequence.map(_.flatten)
+  val shapeƒ: LogicalPlan[(Fix[LogicalPlan], Option[List[Fix[LogicalPlan]]])] => Option[List[Fix[LogicalPlan]]] = {
     case LetF(_, _, body) => body._2
     case ConstantF(Data.Obj(map)) =>
       Some(map.keys.map(n => Constant(Data.Str(n))).toList)
@@ -202,7 +191,8 @@ object LogicalPlan {
     case InvokeF(Take, List(src, _)) => src._2
     case InvokeF(Drop, List(src, _)) => src._2
     case InvokeF(Filter, List(src, _)) => src._2
-    case InvokeF(Cross, srcs) => srcs.map(_._2).sequence.map(_.flatten)
+    case InvokeF(InnerJoin | LeftOuterJoin | RightOuterJoin | FullOuterJoin, _)
+        => Some(List(Constant(Data.Str("left")), Constant(Data.Str("right"))))
     case InvokeF(GroupBy, List(src, _)) => src._2
     case InvokeF(Distinct, List(src, _)) => src._2
     case InvokeF(DistinctBy, List(src, _)) => src._2
@@ -212,22 +202,20 @@ object LogicalPlan {
 
   // TODO: Generalize this to Binder
   def lpParaZygoHistoM[M[_]: Monad, A, B](
-    t: Term[LogicalPlan])(
-    f: LogicalPlan[(Term[LogicalPlan], B)] => B,
-    g: LogicalPlan[(B, Cofree[LogicalPlan, A])] => M[A]):
+    t: Fix[LogicalPlan])(
+    f: LogicalPlan[(Fix[LogicalPlan], B)] => B,
+    g: LogicalPlan[Cofree[LogicalPlan, (B, A)]] => M[A]):
       M[A] = {
-    def loop(t: Term[LogicalPlan], bind: Map[Symbol, ((B, A), Cofree[LogicalPlan, A])]):
-        M[((B, A), Cofree[LogicalPlan, A])] = {
-      lazy val default: M[((B, A), Cofree[LogicalPlan, A])] = for {
-        tup <- (t.unFix.map { x => for {
-          tup <- loop(x, bind)
-          ((b, a), coa) = tup
-        } yield (((x, b), (b, coa)), coa)
-        }).sequence
-        (ba, coa) = tup.unfzip
-        (b, a) = ba.unfzip.bimap(f, g)
-        a0 <- a
-      } yield ((b, a0), Cofree(a0, coa))
+    def loop(t: Fix[LogicalPlan], bind: Map[Symbol, Cofree[LogicalPlan, (B, A)]]):
+        M[Cofree[LogicalPlan, (B, A)]] = {
+      lazy val default: M[Cofree[LogicalPlan, (B, A)]] = for {
+        lp <- (t.unFix.map(x => for {
+          co <- loop(x, bind)
+        } yield ((x, co.head._1), co))).sequence
+        (xb, co) = lp.unfzip
+        b = f(xb)
+        a <- g(co)
+      } yield Cofree((b, a), co)
 
       t.unFix match {
         case FreeF(name)            => bind.get(name).fold(default)(_.point[M])
@@ -241,19 +229,9 @@ object LogicalPlan {
 
     for {
       rez <- loop(t, Map())
-    } yield rez._1._2
+    } yield rez.head._2
   }
 
-  def lpParaZygoHistoS[S, A, B] =
-    lpParaZygoHistoM[({ type λ[α] =  State[S, α] })#λ, A, B] _
-
+  def lpParaZygoHistoS[S, A, B] = lpParaZygoHistoM[State[S, ?], A, B] _
   def lpParaZygoHisto[A, B] = lpParaZygoHistoM[Id, A, B] _
-
-  sealed trait JoinType
-  object JoinType {
-    case object Inner extends JoinType
-    case object LeftOuter extends JoinType
-    case object RightOuter extends JoinType
-    case object FullOuter extends JoinType
-  }
 }

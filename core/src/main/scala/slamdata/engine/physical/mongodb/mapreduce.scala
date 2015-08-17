@@ -1,14 +1,31 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.physical.mongodb
 
-import collection.immutable.ListMap
+import slamdata.Predef._
 
 import scalaz._
-import monocle.Macro._
+import monocle.macros.{GenLens}
 import com.mongodb._
 
 import slamdata.engine.javascript._
 
-case class MapReduce(
+@SuppressWarnings(Array("org.brianmckenna.wartremover.warts.DefaultArguments"))
+final case class MapReduce(
   map:        Js.Expr, // "function if (...) emit(...) }"
   reduce:     Js.Expr, // "function (key, values) { ...; return ... }"
   out:        Option[MapReduce.Output] = None,
@@ -26,7 +43,7 @@ case class MapReduce(
     Bson.Doc(ListMap(
       (// "map" -> Bson.JavaScript(map) ::
        //  "reduce" -> Bson.JavaScript(reduce) ::
-        Some("out" -> out.getOrElse(WithAction()).bson(dst)) ::
+        Some("out" -> out.getOrElse(WithAction(Action.Replace, None, None, None)).bson(dst)) ::
         selection.map("query" -> _.bson) ::
         limit.map("limit" -> Bson.Int64(_)) ::
         finalizer.map("finalize" -> Bson.JavaScript(_)) ::
@@ -46,16 +63,16 @@ object MapReduce {
 
   sealed trait Action
   object Action {
-    case object Replace extends Action
-    case object Merge extends Action
-    case object Reduce extends Action
+    final case object Replace extends Action
+    final case object Merge extends Action
+    final case object Reduce extends Action
   }
 
-  case class WithAction(
-    action:    Action = Action.Replace,
-    db:        Option[String] = None,
-    sharded:   Option[Boolean] = None,
-    nonAtomic: Option[Boolean] = None) extends Output {
+  final case class WithAction(
+    action:    Action,
+    db:        Option[String],
+    sharded:   Option[Boolean],
+    nonAtomic: Option[Boolean]) extends Output {
 
     def outputTypeEnum = action match {
       case Action.Replace => MapReduceCommand.OutputType.REPLACE
@@ -72,19 +89,19 @@ object MapReduce {
       ).flatten: _*))
   }
 
-  case object Inline extends Output {
+  final case object Inline extends Output {
     def outputTypeEnum = MapReduceCommand.OutputType.INLINE
     def bson(dst: Collection) = Bson.Doc(ListMap("inline" -> Bson.Int64(1)))
   }
 
-  val _map       = mkLens[MapReduce, Js.Expr]("map")
-  val _reduce    = mkLens[MapReduce, Js.Expr]("reduce")
-  val _out       = mkLens[MapReduce, Option[Output]]("out")
-  val _selection = mkLens[MapReduce, Option[Selector]]("selection")
-  val _inputSort = mkLens[MapReduce, Option[NonEmptyList[(BsonField, SortType)]]]("inputSort")
-  val _limit     = mkLens[MapReduce, Option[Long]]("limit")
-  val _finalizer = mkLens[MapReduce, Option[Js.Expr]]("finalizer")
-  val _scope     = mkLens[MapReduce, Scope]("scope")
-  val _jsMode    = mkLens[MapReduce, Option[Boolean]]("jsMode")
-  val _verbose   = mkLens[MapReduce, Option[Boolean]]("verbose")
+  val _map       = GenLens[MapReduce](_.map)
+  val _reduce    = GenLens[MapReduce](_.reduce)
+  val _out       = GenLens[MapReduce](_.out)
+  val _selection = GenLens[MapReduce](_.selection)
+  val _inputSort = GenLens[MapReduce](_.inputSort)
+  val _limit     = GenLens[MapReduce](_.limit)
+  val _finalizer = GenLens[MapReduce](_.finalizer)
+  val _scope     = GenLens[MapReduce](_.scope)
+  val _jsMode    = GenLens[MapReduce](_.jsMode)
+  val _verbose   = GenLens[MapReduce](_.verbose)
 }

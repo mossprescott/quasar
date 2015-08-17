@@ -1,13 +1,13 @@
 package slamdata.engine
 
-import slamdata.engine.analysis.fixplate._
-import slamdata.engine.analysis._
+import slamdata.Predef._
+
 import slamdata.engine.sql.SQLParser
 import slamdata.engine.std._
-import scalaz._
 import org.specs2.mutable._
 import org.specs2.matcher.{Matcher, Expectable}
-import slamdata.specs2._
+import org.specs2.scalaz._
+import slamdata.specs2.PendingWithAccurateCoverage
 
 class CompilerSpec extends Specification with CompilerHelpers with PendingWithAccurateCoverage with DisjunctionMatchers {
   import StdLib._
@@ -22,7 +22,6 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
   import structural._
 
   import LogicalPlan._
-  import SemanticAnalysis._
 
   "compiler" should {
     "compile simple constant example 1" in {
@@ -121,7 +120,7 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
     "compile qualified select * with additional fields" in {
       testLogicalPlanCompile(
         "select foo.*, bar.address from foo, bar",
-        Let('tmp0, Cross(read("foo"), read("bar")),
+        Let('tmp0, InnerJoin(read("foo"), read("bar"), Constant(Data.Bool(true))),
           Let('tmp1,
             ObjectConcat(
               ObjectProject(Free('tmp0), Constant(Data.Str("left"))),
@@ -138,7 +137,7 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
     "compile deeply-nested qualified select *" in {
       testLogicalPlanCompile(
         "select foo.bar.baz.*, bar.address from foo, bar",
-        Let('tmp0, Cross(read("foo"), read("bar")),
+        Let('tmp0, InnerJoin(read("foo"), read("bar"), Constant(Data.Bool(true))),
           Let('tmp1,
             ObjectConcat(
               ObjectProject(
@@ -306,6 +305,16 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
             Let('tmp2,
               Squash(Free('tmp1)),
               Free('tmp2)))))
+    }
+
+    "compile conditional (match) without else" in {
+      compileExp("select case when pop = 0 then 'nobody' end from zips") must_==
+        compileExp("select case when pop = 0 then 'nobody' else null end from zips")
+    }
+
+    "compile conditional (switch) without else" in {
+      compileExp("select case pop when 0 then 'nobody' end from zips") must_==
+        compileExp("select case pop when 0 then 'nobody' else null end from zips")
     }
 
     "compile array length" in {
@@ -481,7 +490,7 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
     "compile cross select *" in {
       testLogicalPlanCompile(
         "select * from person, car",
-        Let('tmp0, Cross(read("person"), read("car")),
+        Let('tmp0, InnerJoin(read("person"), read("car"), Constant(Data.Bool(true))),
           Let('tmp1,
             ObjectConcat(
               ObjectProject(Free('tmp0), Constant(Data.Str("left"))),
@@ -494,7 +503,7 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
     "compile two term multiplication from two tables" in {
       testLogicalPlanCompile(
         "select person.age * car.modelYear from person, car",
-        Let('tmp0, Cross(read("person"), read("car")),
+        Let('tmp0, InnerJoin(read("person"), read("car"), Constant(Data.Bool(true))),
           Let('tmp1,
             makeObj(
               "0" ->
@@ -913,10 +922,10 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
         Let('tmp0,
           Let('left1, read("foo"),
             Let('right2, read("bar"),
-              Join(Free('left1), Free('right2),
-                JoinType.Inner, relations.Eq,
-                ObjectProject(Free('left1), Constant(Data.Str("id"))),
-                ObjectProject(Free('right2), Constant(Data.Str("foo_id")))))),
+              InnerJoin(Free('left1), Free('right2),
+                relations.Eq(
+                  ObjectProject(Free('left1), Constant(Data.Str("id"))),
+                  ObjectProject(Free('right2), Constant(Data.Str("foo_id"))))))),
           Let('tmp3,
             makeObj(
               "name" ->
@@ -939,10 +948,10 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
         Let('tmp0,
           Let('left1, read("foo"),
             Let('right2, read("bar"),
-              Join(Free('left1), Free('right2),
-                JoinType.LeftOuter, relations.Lt,
-                ObjectProject(Free('left1), Constant(Data.Str("id"))),
-                ObjectProject(Free('right2), Constant(Data.Str("foo_id")))))),
+              LeftOuterJoin(Free('left1), Free('right2),
+                relations.Lt(
+                  ObjectProject(Free('left1), Constant(Data.Str("id"))),
+                  ObjectProject(Free('right2), Constant(Data.Str("foo_id"))))))),
           Let('tmp3,
             makeObj(
               "name" ->
@@ -967,23 +976,23 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
           Let('left1,
             Let('left3, read("foo"),
               Let('right4, read("bar"),
-                Join(Free('left3), Free('right4),
-                  JoinType.Inner, relations.Eq,
-                  ObjectProject(
-                    Free('left3),
-                    Constant(Data.Str("id"))),
-                  ObjectProject(
-                    Free('right4),
-                    Constant(Data.Str("foo_id")))))),
+                InnerJoin(Free('left3), Free('right4),
+                  relations.Eq(
+                    ObjectProject(
+                      Free('left3),
+                      Constant(Data.Str("id"))),
+                    ObjectProject(
+                      Free('right4),
+                      Constant(Data.Str("foo_id"))))))),
             Let('right2, read("baz"),
-              Join(Free('left1), Free('right2),
-                JoinType.Inner, relations.Eq,
-                ObjectProject(
-                  ObjectProject(Free('left1),
-                    Constant(Data.Str("right"))),
-                  Constant(Data.Str("id"))),
-                ObjectProject(Free('right2),
-                  Constant(Data.Str("bar_id")))))),
+              InnerJoin(Free('left1), Free('right2),
+                relations.Eq(
+                  ObjectProject(Free('right2),
+                    Constant(Data.Str("bar_id"))),
+                  ObjectProject(
+                    ObjectProject(Free('left1),
+                      Constant(Data.Str("right"))),
+                    Constant(Data.Str("id"))))))),
           Let('tmp5,
             makeObj(
               "name" ->
@@ -1006,7 +1015,7 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
     "compile sub-select in filter" in {
       testLogicalPlanCompile(
         "select city, pop from zips where pop > (select avg(pop) from zips)",
-        ???)
+        read("zips"))
     }.pendingUntilFixed
 
     "compile simple sub-select" in {
@@ -1138,15 +1147,15 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
     }.pendingUntilFixed
 
     "fail with ambiguous reference" in {
-      compile("select foo from bar, baz") must beAnyLeftDisj
+      compile("select foo from bar, baz") must beLeftDisjunction
     }
 
     "fail with ambiguous reference in cond" in {
-      compile("select (case when a = 1 then 'ok' else 'reject' end) from bar, baz") must beAnyLeftDisj
+      compile("select (case when a = 1 then 'ok' else 'reject' end) from bar, baz") must beLeftDisjunction
     }
 
     "fail with ambiguous reference in else" in {
-      compile("select (case when bar.a = 1 then 'ok' else foo end) from bar, baz") must beAnyLeftDisj
+      compile("select (case when bar.a = 1 then 'ok' else foo end) from bar, baz") must beLeftDisjunction
     }
   }
 }

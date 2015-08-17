@@ -1,16 +1,25 @@
 package slamdata.engine.config
 
+import slamdata.Predef._
+import slamdata.engine._; import Errors._; import Evaluator._
 import slamdata.engine.fs._
 
 import org.specs2.mutable._
+import org.specs2.scalaz._
 
-class ConfigSpec extends Specification {
+class ConfigSpec extends Specification with DisjunctionMatchers {
+
   val TestConfig = Config(
     server = SDServerConfig(Some(92)),
     mountings = Map(
-      Path.Root -> MongoDbConfig("mongodb://slamengine:slamengine@ds045089.mongolab.com:45089/slamengine-test-01")
-    )
-  )
+      Path.Root -> MongoDbConfig("mongodb://slamengine:slamengine@ds045089.mongolab.com:45089/slamengine-test-01")))
+
+  val BrokenTestConfig = Config(
+    server = SDServerConfig(Some(92)),
+    mountings = Map(
+      Path.Root -> MongoDbConfig("mongodb://slamengine:slamengine@ds045088.mongolab.com:45089/slamengine-test-01")))
+
+  val testConfigFile = "test-config.json"
 
   val OldConfigStr =
     """{
@@ -43,11 +52,11 @@ class ConfigSpec extends Specification {
 
   "fromString" should {
     "parse valid config" in {
-      Config.fromString(ConfigStr).toOption must beSome(TestConfig)
+      Config.fromString(ConfigStr) must beRightDisjunction(TestConfig)
     }
 
     "parse previous config" in {
-      Config.fromString(OldConfigStr).toOption must beSome(TestConfig)
+      Config.fromString(OldConfigStr) must beRightDisjunction(TestConfig)
     }
   }
 
@@ -57,61 +66,96 @@ class ConfigSpec extends Specification {
     }
   }
 
+  "write" should {
+    "create loadable config" in {
+      val fileName = scala.util.Random.nextInt.toString + testConfigFile
+      (for {
+        _ <- liftE[EnvironmentError](Config.write(TestConfig, Some(fileName)))
+        config <- Config.load(Some(fileName))
+        _ = java.nio.file.Files.delete(java.nio.file.Paths.get(fileName))
+      } yield config).run.run must beRightDisjunction(TestConfig)
+    }
+  }
+
+  "loadAndTest" should {
+    "load a correct config" in {
+      val fileName = scala.util.Random.nextInt.toString + testConfigFile
+      (for {
+        _ <- liftE[EnvironmentError](Config.write(TestConfig, Some(fileName)))
+        config <- Config.loadAndTest(Some(fileName))
+        _ = java.nio.file.Files.delete(java.nio.file.Paths.get(fileName))
+      } yield config).run.run must beRightDisjunction(TestConfig)
+    }
+
+    "fail on a config with incorrect mounting" in {
+      val fileName = scala.util.Random.nextInt.toString + testConfigFile
+      val rez = (for {
+        _ <- liftE[EnvironmentError](Config.write(BrokenTestConfig, Some(fileName)))
+        config <- Config.loadAndTest(Some(fileName))
+      } yield config).run.run must beLeftDisjunction
+      java.nio.file.Files.delete(java.nio.file.Paths.get(fileName))
+
+      rez
+    }
+  }
+
   "MongoDbConfig.UriPattern" should {
     import MongoDbConfig._
 
     "parse simple URI" in {
       "mongodb://localhost" match {
-        case UriPattern(_, _, host, _, _, _, _) => host must_== "localhost"
+        case ParsedUri(_, _, host, _, _, _, _) => host must_== "localhost"
       }
     }
 
     "parse simple URI with trailing slash" in {
       "mongodb://localhost/" match {
-        case UriPattern(_, _, host, _, _, _, _) => host must_== "localhost"
+        case ParsedUri(_, _, host, _, _, _, _) => host must_== "localhost"
       }
     }
 
     "parse user/password" in {
       "mongodb://me:pwd@localhost" match {
-        case UriPattern(user, pwd, _, _, _, _, _) => user must_== "me"; pwd must_== "pwd"
+        case ParsedUri(user, pwd, _, _, _, _, _) =>
+          user must beSome("me")
+          pwd must beSome("pwd")
       }
     }
 
     "parse port" in {
       "mongodb://localhost:5555" match {
-        case UriPattern(_, _, _, port, _, _, _) => port.toInt must_== 5555
+        case ParsedUri(_, _, _, port, _, _, _) => port must beSome(5555)
       }
     }
 
     "parse database" in {
       "mongodb://localhost/test" match {
-        case UriPattern(_, _, _, _, _, db, _) => db must_== "test"
+        case ParsedUri(_, _, _, _, _, db, _) => db must beSome("test")
       }
     }
 
     "parse additional host(s)" in {
       "mongodb://host1,host2,host3:5555" match {
-        case UriPattern(_, _, _, _, hosts, _, _) => hosts must_== ",host2,host3:5555"
+        case ParsedUri(_, _, _, _, hosts, _, _) => hosts must beSome(",host2,host3:5555")
       }
     }
 
     "parse options" in {
       "mongodb://host/?option1=foo&option2=bar" match {
-        case UriPattern(_, _, _, _, _, _, options) => options must_== "option1=foo&option2=bar"
+        case ParsedUri(_, _, _, _, _, _, options) => options must beSome("option1=foo&option2=bar")
       }
     }
 
     "parse all of the above" in {
       "mongodb://me:pwd@host1:5555,host2:5559,host3/test?option1=foo&option2=bar" match {
-        case UriPattern(user, pwd, host, port, extraHosts, db, options) =>
-          user must_== "me"
-          pwd must_== "pwd"
+        case ParsedUri(user, pwd, host, port, extraHosts, db, options) =>
+          user must beSome("me")
+          pwd must beSome("pwd")
           host must_== "host1"
-          port.toInt must_== 5555
-          extraHosts must_== ",host2:5559,host3"
-          db must_== "test"
-          options must_== "option1=foo&option2=bar"
+          port must beSome(5555)
+          extraHosts must beSome(",host2:5559,host3")
+          db must beSome("test")
+          options must beSome("option1=foo&option2=bar")
       }
     }
   }

@@ -1,10 +1,28 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.sql
 
-import scalaz._
-import Scalaz._
+import slamdata.Predef._
+import slamdata.{RenderTree, Terminal, NonTerminal}
+import slamdata.fp._
 
-import slamdata.engine.fp._
-import slamdata.engine.{RenderTree, Terminal, NonTerminal}
+import scala.Any
+
+import scalaz._, Scalaz._
 
 sealed trait Node {
   def sql: String
@@ -20,14 +38,101 @@ sealed trait Node {
     case _                   => "\"" + s.replace("\"", "\"\"") + "\""
   }
 
-  type Self = this.type
+  // TODO: Remove this once AnnotatedTree is dead (or kill Node first).
+  def mapUpM0[F[_]: Monad](proj:     ((Proj, Proj)) => F[Proj],
+                           relation: ((SqlRelation, SqlRelation)) => F[SqlRelation],
+                           expr:     ((Expr, Expr)) => F[Expr],
+                           groupBy:  ((GroupBy, GroupBy)) => F[GroupBy],
+                           orderBy:  ((OrderBy, OrderBy)) => F[OrderBy],
+                           case0:    ((Case, Case)) => F[Case]): F[Expr] =
+    scala.sys.error("Called mapUpM0 on a non-Expr.")
+}
 
+trait NodeInstances {
+  implicit def NodeRenderTree[A <: Node]: RenderTree[A] = new RenderTree[A] {
+    val astType = "AST" :: Nil
+
+    def render(n: A) = n match {
+      case Select(isDistinct, projections, relations, filter, groupBy, orderBy, limit, offset) =>
+        val nt = "Select" :: astType
+        NonTerminal(nt,
+          isDistinct match { case `SelectDistinct` => Some("distinct"); case _ => None },
+          projections.map(p => NodeRenderTree.render(p)) ++
+            (relations.map(r => NodeRenderTree.render(r)) ::
+              filter.map(f => NodeRenderTree.render(f)) ::
+              groupBy.map(g => NodeRenderTree.render(g)) ::
+              orderBy.map(o => NodeRenderTree.render(o)) ::
+              limit.map(l => Terminal("Limit" :: nt, Some(l.toString))) ::
+              offset.map(o => Terminal("Offset" :: nt, Some(o.toString))) ::
+              Nil).flatten)
+
+      case Proj(expr, alias) => NonTerminal("Proj" :: astType, alias, NodeRenderTree.render(expr) :: Nil)
+
+      case ExprRelationAST(select, alias) => NonTerminal("ExprRelation" :: astType, Some("Expr as " + alias), NodeRenderTree.render(select) :: Nil)
+
+      case TableRelationAST(name, Some(alias)) => Terminal("TableRelation" :: astType, Some(name + " as " + alias))
+      case TableRelationAST(name, None)        => Terminal("TableRelation" :: astType, Some(name))
+
+      case CrossRelation(left, right) => NonTerminal("CrossRelation" :: astType, None, NodeRenderTree.render(left) :: NodeRenderTree.render(right) :: Nil)
+
+      case JoinRelation(left, right, jt, clause) =>
+        NonTerminal("JoinRelation" :: astType, Some(jt.toString),
+          NodeRenderTree.render(left) :: NodeRenderTree.render(right) :: NodeRenderTree.render(clause) :: Nil)
+
+      case OrderBy(keys) =>
+        val nt = "OrderBy" :: astType
+        NonTerminal(nt, None,
+          keys.map { case (x, t) => NonTerminal("OrderType" :: nt, Some(t.toString), NodeRenderTree.render(x) :: Nil)})
+
+      case GroupBy(keys, Some(having)) => NonTerminal("GroupBy" :: astType, None, keys.map(NodeRenderTree.render(_)) :+ NodeRenderTree.render(having))
+      case GroupBy(keys, None)         => NonTerminal("GroupBy" :: astType, None, keys.map(NodeRenderTree.render(_)))
+
+      case SetLiteral(exprs) => NonTerminal("Set" :: astType, None, exprs.map(NodeRenderTree.render(_)))
+      case ArrayLiteral(exprs) => NonTerminal("Array" :: astType, None, exprs.map(NodeRenderTree.render(_)))
+
+      case InvokeFunction(name, args) => NonTerminal("InvokeFunction" :: astType, Some(name), args.map(NodeRenderTree.render(_)))
+
+      case Case(cond, expr) => NonTerminal("Case" :: astType, None, NodeRenderTree.render(cond) :: NodeRenderTree.render(expr) :: Nil)
+
+      case Match(expr, cases, Some(default)) => NonTerminal("Match" :: astType, None, NodeRenderTree.render(expr) :: (cases.map(NodeRenderTree.render(_)) :+ NodeRenderTree.render(default)))
+      case Match(expr, cases, None)          => NonTerminal("Match" :: astType, None, NodeRenderTree.render(expr) :: cases.map(NodeRenderTree.render(_)))
+
+      case Switch(cases, Some(default)) => NonTerminal("Switch" :: astType, None, cases.map(NodeRenderTree.render(_)) :+ NodeRenderTree.render(default))
+      case Switch(cases, None)          => NonTerminal("Switch" :: astType, None, cases.map(NodeRenderTree.render(_)))
+
+      case Binop(lhs, rhs, op) => NonTerminal("Binop" :: astType, Some(op.toString), NodeRenderTree.render(lhs) :: NodeRenderTree.render(rhs) :: Nil)
+
+      case Unop(expr, op) => NonTerminal("Unop" :: astType, Some(op.sql), NodeRenderTree.render(expr) :: Nil)
+
+      case Splice(expr) => NonTerminal("Splice" :: astType, None, expr.toList.map(NodeRenderTree.render(_)))
+
+      case Ident(name) => Terminal("Ident" :: astType, Some(name))
+
+      case Vari(name) => Terminal("Variable" :: astType, Some(":" + name))
+
+      case x: LiteralExpr => Terminal("LiteralExpr" :: astType, Some(x.sql))
+    }
+  }
+}
+
+object Node extends NodeInstances
+
+trait IsDistinct
+final case object SelectDistinct extends IsDistinct
+final case object SelectAll extends IsDistinct
+
+final case class Proj(expr: Expr, alias: Option[String]) extends Node {
+  def children = expr :: Nil
+  def sql = alias.foldLeft(expr.sql)(_ + " as " + _qq(_))
+}
+
+sealed trait Expr extends Node {
   def mapUpM[F[_]: Monad](proj:     Proj => F[Proj],
                           relation: SqlRelation => F[SqlRelation],
                           expr:     Expr => F[Expr],
                           groupBy:  GroupBy => F[GroupBy],
                           orderBy:  OrderBy => F[OrderBy],
-                          case0:    Case => F[Case]): F[Self] = {
+                          case0:    Case => F[Case]): F[Expr] = {
     mapUpM0[F](
       v => proj(v._2),
       v => relation(v._2),
@@ -37,12 +142,14 @@ sealed trait Node {
       v => case0(v._2))
   }
 
-  def mapUpM0[F[_]: Monad](proj:     ((Proj, Proj)) => F[Proj],
-                           relation: ((SqlRelation, SqlRelation)) => F[SqlRelation],
-                           expr:     ((Expr, Expr)) => F[Expr],
-                           groupBy:  ((GroupBy, GroupBy)) => F[GroupBy],
-                           orderBy:  ((OrderBy, OrderBy)) => F[OrderBy],
-                           case0:    ((Case, Case)) => F[Case]): F[Self] = {
+  override def mapUpM0[F[_]: Monad](
+    proj:     ((Proj, Proj)) => F[Proj],
+    relation: ((SqlRelation, SqlRelation)) => F[SqlRelation],
+    expr:     ((Expr, Expr)) => F[Expr],
+    groupBy:  ((GroupBy, GroupBy)) => F[GroupBy],
+    orderBy:  ((OrderBy, OrderBy)) => F[OrderBy],
+    case0:    ((Case, Case)) => F[Case]):
+      F[Expr] = {
 
     def caseLoop(node: Case): F[Case] = (for {
       cond <- exprLoop(node.cond)
@@ -134,7 +241,7 @@ sealed trait Node {
       case l @ IntLiteral(_)    => expr(l -> l)
       case l @ FloatLiteral(_)  => expr(l -> l)
       case l @ StringLiteral(_) => expr(l -> l)
-      case l @ NullLiteral()    => expr(l -> l)
+      case l @ NullLiteral      => expr(l -> l)
       case l @ BoolLiteral(_)   => expr(l -> l)
       case l @ Vari(_)          => expr(l -> l)
     }
@@ -148,91 +255,9 @@ sealed trait Node {
       k2 <- node.keys.map { case (key, orderType) => exprLoop(key).map(_ -> orderType) }.sequence
     } yield node -> OrderBy(k2)).flatMap(orderBy)
 
-    (this match {
-      case x: SqlRelation => relationLoop(x)
-      case x: Expr        => exprLoop(x)
-      case x: GroupBy     => groupByLoop(x)
-      case x: OrderBy     => orderByLoop(x)
-      case x              => x.point[F]
-    }).asInstanceOf[F[Self]]
+    exprLoop(this)
   }
 }
-
-trait NodeInstances {
-  implicit def NodeRenderTree[A <: Node]: RenderTree[A] = new RenderTree[A] {
-    override def render(n: A) = {
-      n match {
-        case Select(isDistinct, projections, relations, filter, groupBy, orderBy, limit, offset) =>
-          NonTerminal(isDistinct match { case `SelectDistinct` =>  "distinct"; case _ => "" },
-                      projections.map(p => NodeRenderTree.render(p)) ++
-                        (relations.map(r => NodeRenderTree.render(r)) ::
-                          filter.map(f => NodeRenderTree.render(f)) ::
-                          groupBy.map(g => NodeRenderTree.render(g)) ::
-                          orderBy.map(o => NodeRenderTree.render(o)) ::
-                          limit.map(l => Terminal(l.toString, List("AST", "Limit"))) ::
-                          offset.map(o => Terminal(o.toString, List("AST", "Offset"))) ::
-                          Nil).flatten,
-                    List("AST", "Select"))
-
-        case Proj(expr, alias) => NonTerminal(alias.getOrElse(""), NodeRenderTree.render(expr) :: Nil, List("AST", "Proj"))
-
-        case ExprRelationAST(select, alias) => NonTerminal("Expr as " + alias, NodeRenderTree.render(select) :: Nil, List("AST", "ExprRelation"))
-
-        case TableRelationAST(name, Some(alias)) => Terminal(name + " as " + alias, List("AST", "TableRelation"))
-        case TableRelationAST(name, None)        => Terminal(name, List("AST", "TableRelation"))
-
-        case CrossRelation(left, right) => NonTerminal("", NodeRenderTree.render(left) :: NodeRenderTree.render(right) :: Nil, List("AST", "CrossRelation"))
-
-        case JoinRelation(left, right, jt, clause) => NonTerminal(s"($jt)",
-          NodeRenderTree.render(left) :: NodeRenderTree.render(right) :: NodeRenderTree.render(clause) :: Nil,
-          List("AST", "JoinRelation"))
-
-        case OrderBy(keys) => NonTerminal("", keys.map { case (x, t) => NonTerminal(t.toString, NodeRenderTree.render(x) :: Nil, List("AST", "OrderType"))}, List("AST", "OrderBy"))
-
-        case GroupBy(keys, Some(having)) => NonTerminal("", keys.map(NodeRenderTree.render(_)) :+ NodeRenderTree.render(having), List("AST", "GroupBy"))
-        case GroupBy(keys, None)         => NonTerminal("", keys.map(NodeRenderTree.render(_)), List("AST", "GroupBy"))
-
-        case SetLiteral(exprs) => NonTerminal("", exprs.map(NodeRenderTree.render(_)), List("AST", "Set"))
-        case ArrayLiteral(exprs) => NonTerminal("", exprs.map(NodeRenderTree.render(_)), List("AST", "Array"))
-
-        case InvokeFunction(name, args) => NonTerminal(name, args.map(NodeRenderTree.render(_)), List("AST", "InvokeFunction"))
-
-        case Case(cond, expr) => NonTerminal("", NodeRenderTree.render(cond) :: NodeRenderTree.render(expr) :: Nil, List("AST", "Case"))
-
-        case Match(expr, cases, Some(default)) => NonTerminal("", NodeRenderTree.render(expr) :: (cases.map(NodeRenderTree.render(_)) :+ NodeRenderTree.render(default)), List("AST", "Match"))
-        case Match(expr, cases, None)          => NonTerminal("", NodeRenderTree.render(expr) :: cases.map(NodeRenderTree.render(_)), List("AST", "Match"))
-
-        case Switch(cases, Some(default)) => NonTerminal("", cases.map(NodeRenderTree.render(_)) :+ NodeRenderTree.render(default), List("AST", "Switch"))
-        case Switch(cases, None)          => NonTerminal("", cases.map(NodeRenderTree.render(_)), List("AST", "Switch"))
-
-        case Binop(lhs, rhs, op) => NonTerminal(op.toString, NodeRenderTree.render(lhs) :: NodeRenderTree.render(rhs) :: Nil, List("AST", "Binop"))
-
-        case Unop(expr, op) => NonTerminal(op.sql, NodeRenderTree.render(expr) :: Nil, List("AST", "Unop"))
-
-        case Splice(expr) => NonTerminal("", expr.toList.map(NodeRenderTree.render(_)), List("AST", "Splice"))
-
-        case Ident(name) => Terminal(name, List("AST", "Ident"))
-
-        case Vari(name) => Terminal(":" + name, List("AST", "Variable"))
-
-        case x: LiteralExpr => Terminal(x.sql, List("AST", "LiteralExpr"))
-      }
-    }
-  }
-}
-
-object Node extends NodeInstances
-
-trait IsDistinct
-case object SelectDistinct extends IsDistinct
-case object SelectAll extends IsDistinct
-
-case class Proj(expr: Expr, alias: Option[String]) extends Node {
-  def children = expr :: Nil
-  def sql = alias.foldLeft(expr.sql)(_ + " as " + _qq(_))
-}
-
-sealed trait Expr extends Node
 
 final case class Select(isDistinct:   IsDistinct,
                         projections:  List[Proj],
@@ -291,7 +316,7 @@ final case class ArrayLiteral(exprs: List[Expr]) extends Expr {
   def children = exprs.toList
 }
 
-case class Splice(expr: Option[Expr]) extends Expr {
+final case class Splice(expr: Option[Expr]) extends Expr {
   def sql = expr.fold("*")(x => "(" + x.sql + ").*")
 
   def children = expr.toList
@@ -318,8 +343,8 @@ sealed abstract class BinaryOperator(val sql: String) extends Node with ((Expr, 
   def children = Nil
 
   override def equals(that: Any) = that match {
-    case x : BinaryOperator if (sql == x.sql) => true
-    case _ => false
+    case x: BinaryOperator => sql == x.sql
+    case _                 => false
   }
 
   override def hashCode = sql.hashCode
@@ -327,23 +352,23 @@ sealed abstract class BinaryOperator(val sql: String) extends Node with ((Expr, 
   override def toString = sql
 }
 
-case object Or      extends BinaryOperator("or")
-case object And     extends BinaryOperator("and")
-case object Eq      extends BinaryOperator("=")
-case object Neq     extends BinaryOperator("<>")
-case object Ge      extends BinaryOperator(">=")
-case object Gt      extends BinaryOperator(">")
-case object Le      extends BinaryOperator("<=")
-case object Lt      extends BinaryOperator("<")
-case object Concat  extends BinaryOperator("||")
-case object Plus    extends BinaryOperator("+")
-case object Minus   extends BinaryOperator("-")
-case object Mult    extends BinaryOperator("*")
-case object Div     extends BinaryOperator("/")
-case object Mod     extends BinaryOperator("%")
-case object In      extends BinaryOperator("in")
-case object FieldDeref extends BinaryOperator("{}")
-case object IndexDeref extends BinaryOperator("[]")
+final case object Or      extends BinaryOperator("or")
+final case object And     extends BinaryOperator("and")
+final case object Eq      extends BinaryOperator("=")
+final case object Neq     extends BinaryOperator("<>")
+final case object Ge      extends BinaryOperator(">=")
+final case object Gt      extends BinaryOperator(">")
+final case object Le      extends BinaryOperator("<=")
+final case object Lt      extends BinaryOperator("<")
+final case object Concat  extends BinaryOperator("||")
+final case object Plus    extends BinaryOperator("+")
+final case object Minus   extends BinaryOperator("-")
+final case object Mult    extends BinaryOperator("*")
+final case object Div     extends BinaryOperator("/")
+final case object Mod     extends BinaryOperator("%")
+final case object In      extends BinaryOperator("in")
+final case object FieldDeref extends BinaryOperator("{}")
+final case object IndexDeref extends BinaryOperator("[]")
 
 final case class Unop(expr: Expr, op: UnaryOperator) extends Expr {
   def sql = op match {
@@ -364,21 +389,30 @@ sealed abstract class UnaryOperator(val sql: String) extends Node with (Expr => 
   val name = sql
 
   def children = Nil
+
+  override def equals(that: Any) = that match {
+    case x: UnaryOperator => sql == x.sql
+    case _                => false
+  }
+
+  override def hashCode = sql.hashCode
+
+  override def toString = sql
 }
 
-case object Not           extends UnaryOperator("not")
-case object IsNull        extends UnaryOperator("is_null")
-case object Exists        extends UnaryOperator("exists")
-case object Positive      extends UnaryOperator("+")
-case object Negative      extends UnaryOperator("-")
-case object Distinct      extends UnaryOperator("distinct")
-case object ToDate        extends UnaryOperator("date")
-case object ToTime        extends UnaryOperator("time")
-case object ToTimestamp   extends UnaryOperator("timestamp")
-case object ToInterval    extends UnaryOperator("interval")
-case object ToId          extends UnaryOperator("oid")
-case object ObjectFlatten extends UnaryOperator("flatten_object")
-case object ArrayFlatten  extends UnaryOperator("flatten_array")
+final case object Not           extends UnaryOperator("not")
+final case object IsNull        extends UnaryOperator("is_null")
+final case object Exists        extends UnaryOperator("exists")
+final case object Positive      extends UnaryOperator("+")
+final case object Negative      extends UnaryOperator("-")
+final case object Distinct      extends UnaryOperator("distinct")
+final case object ToDate        extends UnaryOperator("date")
+final case object ToTime        extends UnaryOperator("time")
+final case object ToTimestamp   extends UnaryOperator("timestamp")
+final case object ToInterval    extends UnaryOperator("interval")
+final case object ToId          extends UnaryOperator("oid")
+final case object ObjectFlatten extends UnaryOperator("flatten_object")
+final case object ArrayFlatten  extends UnaryOperator("flatten_array")
 
 final case class Ident(name: String) extends Expr {
   def sql = _qq(name)
@@ -430,7 +464,7 @@ final case class StringLiteral(v: String) extends LiteralExpr {
   def sql = _q(v)
 }
 
-final case class NullLiteral() extends LiteralExpr {
+final case object NullLiteral extends LiteralExpr {
   def sql = "null"
 }
 
@@ -483,14 +517,14 @@ final case class JoinRelation(left: SqlRelation, right: SqlRelation, tpe: JoinTy
 }
 
 sealed abstract class JoinType(val sql: String)
-case object LeftJoin extends JoinType("left join")
-case object RightJoin extends JoinType("right join")
-case object InnerJoin extends JoinType("inner join")
-case object FullJoin extends JoinType("full join")
+final case object LeftJoin extends JoinType("left join")
+final case object RightJoin extends JoinType("right join")
+final case object InnerJoin extends JoinType("inner join")
+final case object FullJoin extends JoinType("full join")
 
 sealed trait OrderType
-case object ASC extends OrderType
-case object DESC extends OrderType
+final case object ASC extends OrderType
+final case object DESC extends OrderType
 
 final case class GroupBy(keys: List[Expr], having: Option[Expr]) extends Node {
   def sql = List(Some("group by"), Some(keys.map(_.sql).mkString(", ")), having.map(e => "having " + e.sql)).flatten.mkString(" ")

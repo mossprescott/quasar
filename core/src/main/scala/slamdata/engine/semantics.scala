@@ -1,11 +1,101 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine
 
-import slamdata.engine.fp._
+import slamdata.Predef._
+import slamdata.{NonTerminal, RenderTree, RenderedTree, Terminal}
+import slamdata.fp._
 import slamdata.engine.analysis._
 import slamdata.engine.std.Library
 
-import scalaz.{Tree => _, Node => _, _}
-import Scalaz._
+import scala.AnyRef
+
+import scalaz.{Tree => _, Node => _, _}, Scalaz._
+
+sealed trait SemanticError {
+  def message: String
+}
+
+object SemanticError {
+  import slamdata.engine.sql._
+
+  implicit val SemanticErrorShow = new Show[SemanticError] {
+    override def show(value: SemanticError) = Cord(value.message)
+  }
+
+  final case class GenericError(message: String) extends SemanticError
+
+  final case class DomainError(data: Data, hint: Option[String]) extends SemanticError {
+    def message = "The data '" + data + "' did not fall within its expected domain" + hint.map(": " + _)
+  }
+
+  final case class FunctionNotFound(name: String) extends SemanticError {
+    def message = "The function '" + name + "' could not be found in the standard library"
+  }
+  final case class FunctionNotBound(node: Node) extends SemanticError {
+    def message = "A function was not bound to the node " + node
+  }
+  final case class TypeError(expected: Type, actual: Type, hint: Option[String]) extends SemanticError {
+    def message = "Expected type " + expected + " but found " + actual + hint.map(": " + _).getOrElse("")
+  }
+  final case class VariableParseError(vari: VarName, value: VarValue, cause: slamdata.engine.sql.ParsingError) extends SemanticError {
+    def message = "The variable " + vari + " should contain a SQL expression but was `" + value.value + "` (" + cause.message + ")"
+  }
+  final case class DuplicateRelationName(defined: String, duplicated: SqlRelation) extends SemanticError {
+    private def nameOf(r: SqlRelation) = r match {
+      case TableRelationAST(name, aliasOpt) => aliasOpt.getOrElse(name)
+      case ExprRelationAST(_, alias)        => alias
+      case JoinRelation(_, _, _, _)         => "unknown"
+      case CrossRelation(_, _)              => "unknown"
+    }
+
+    def message = "Found relation with duplicate name '" + defined + "': " + defined
+  }
+  final case class NoTableDefined(node: Node) extends SemanticError {
+    def message = "No table was defined in the scope of \'" + node.sql + "\'"
+  }
+  final case class MissingField(name: String) extends SemanticError {
+    def message = "No field named '" + name + "' exists"
+  }
+  final case class MissingIndex(index: Int) extends SemanticError {
+    def message = "No element exists at array index '" + index
+  }
+  final case class WrongArgumentCount(func: Func, expected: Int, actual: Int) extends SemanticError {
+    def message = "Wrong number of arguments for function '" + func.name + "': expected " + expected + " but found " + actual
+  }
+  final case class NonCompilableNode(node: Node) extends SemanticError {
+    def message = "The node " + node + " cannot be compiled"
+  }
+  final case class ExpectedLiteral(node: Node) extends SemanticError {
+    def message = "Expected literal but found '" + node.sql + "'"
+  }
+  final case class AmbiguousReference(node: Node, relations: List[SqlRelation]) extends SemanticError {
+    def message = "The expression '" + node.sql + "' is ambiguous and might refer to any of the tables " + relations.mkString(", ")
+  }
+  final case object CompiledTableMissing extends SemanticError {
+    def message = "Expected the root table to be compiled but found nothing"
+  }
+  final case class CompiledSubtableMissing(name: String) extends SemanticError {
+    def message = "Expected to find a compiled subtable with name \"" + name + "\""
+  }
+  final case class DateFormatError(func: Func, str: String, hint: Option[String]) extends SemanticError {
+    def message = "Date/time string could not be parsed as " + func.name + ": " + str + hint.map(" (" + _ + ")").getOrElse("")
+  }
+}
 
 trait SemanticAnalysis {
   import slamdata.engine.sql._
@@ -46,12 +136,10 @@ trait SemanticAnalysis {
 
   sealed trait Synthetic
   object Synthetic {
-    case object SortKey extends Synthetic
+    final case object SortKey extends Synthetic
   }
 
-  implicit val SyntheticRenderTree = new RenderTree[Synthetic] {
-    def render(v: Synthetic) = Terminal(v.toString, List("Synthetic"))
-  }
+  implicit val SyntheticRenderTree = RenderTree.fromToString[Synthetic]("Synthetic")
 
   /**
    * Inserts synthetic fields into the projections of each `select` stmt to hold
@@ -65,11 +153,15 @@ trait SemanticAnalysis {
     def transform(node: Node): Node =
       node match {
         case sel @ Select(_, projections, _, _, _, Some(sql.OrderBy(keys)), _, _) => {
-          def matches(key: Expr, proj: Proj): Boolean = (key, proj) match {
-            case (Ident(keyName), Proj(_, Some(alias)))     => keyName == alias
-            case (Ident(keyName), Proj(Ident(projName), _)) => keyName == projName
-            case (Ident(_),       Proj(Splice(_), _))       => true
-            case _                                          => false
+          def matches(key: Expr): PartialFunction[Proj, Expr] = key match {
+            case Ident(keyName) => {
+              case Proj(_, Some(alias))        if keyName == alias    => key
+              case Proj(Ident(projName), None) if keyName == projName => key
+              case Proj(Splice(_), _)                                 => key
+            }
+            case _ => {
+              case Proj(expr2, Some(alias)) if key == expr2 => Ident(alias)
+            }
           }
 
           // Note: order of the keys has to be preserved, so this complex fold seems
@@ -77,14 +169,14 @@ trait SemanticAnalysis {
           type Target = (List[Proj], List[(Expr, OrderType)], Int)
 
           val (projs2, keys2, _) = keys.foldRight[Target]((Nil, Nil, 0)) {
-            case (key @ (expr, orderType), (projs, keys, index)) =>
-              if (!projections.exists(matches(expr, _))) {
+            case ((expr, orderType), (projs, keys, index)) =>
+              projections.collectFirst(matches(expr)).fold {
                 val name  = prefix + index.toString()
                 val proj2 = Proj(expr, Some(name))
                 val key2  = Ident(name) -> orderType
-
                 (proj2 :: projs, key2 :: keys, index + 1)
-              } else (projs, key :: keys, index)
+              } (
+                kExpr => (projs, (kExpr, orderType) :: keys, index))
           }
 
           sel.copy(projections = projections ++ projs2,
@@ -104,7 +196,6 @@ trait SemanticAnalysis {
 
     tree1 => ann(tree(transform(tree1.root)))
   }
-
 
   case class TableScope(scope: Map[String, SqlRelation])
 
@@ -186,7 +277,7 @@ trait SemanticAnalysis {
 
     def flatten: Set[Provenance] = Set(this)
 
-    override def equals(that: Any): Boolean = (this, that) match {
+    override def equals(that: scala.Any): Boolean = (this, that) match {
       case (x, y) if (x.eq(y.asInstanceOf[AnyRef])) => true
       case (Relation(v1), Relation(v2)) => v1 == v2
       case (Either(_, _), that @ Either(_, _)) => this.simplify.flatten == that.simplify.flatten
@@ -204,22 +295,46 @@ trait SemanticAnalysis {
     implicit val ProvenanceRenderTree = new RenderTree[Provenance] { self =>
       import Provenance._
 
-      override def render(v: Provenance) = {
+      def render(v: Provenance) = {
         val ProvenanceNodeType = List("Provenance")
 
         def nest(l: RenderedTree, r: RenderedTree, sep: String) = (l, r) match {
-          case (RenderedTree(ll, Nil, lt), RenderedTree(rl, Nil, rt)) =>
-                    Terminal("(" + ll + " " + sep + " " + rl + ")", ProvenanceNodeType)
-          case _ => NonTerminal(sep, l :: r :: Nil, ProvenanceNodeType)
+          case (RenderedTree(_, ll, Nil), RenderedTree(_, rl, Nil)) =>
+                    Terminal(ProvenanceNodeType, Some("(" + ll + " " + sep + " " + rl + ")"))
+          case _ => NonTerminal(ProvenanceNodeType, Some(sep), l :: r :: Nil)
         }
 
         v match {
-          case Empty               => Terminal("Empty", ProvenanceNodeType)
-          case Value               => Terminal("Value", ProvenanceNodeType)
-          case Relation(value)     => RenderTree[Node].render(value).copy(nodeType=ProvenanceNodeType)
+          case Empty               => Terminal(ProvenanceNodeType, Some("Empty"))
+          case Value               => Terminal(ProvenanceNodeType, Some("Value"))
+          case Relation(value)     => RenderTree[Node].render(value).copy(nodeType = ProvenanceNodeType)
           case Either(left, right) => nest(self.render(left), self.render(right), "|")
           case Both(left, right)   => nest(self.render(left), self.render(right), "&")
         }
+      }
+    }
+
+    implicit val ProvenanceOrMonoid = new Monoid[Provenance] {
+      import Provenance._
+
+      def zero = Empty
+
+      def append(v1: Provenance, v2: => Provenance) = (v1, v2) match {
+        case (Empty, that) => that
+        case (this0, Empty) => this0
+        case _ => v1 | v2
+      }
+    }
+
+    implicit val ProvenanceAndMonoid = new Monoid[Provenance] {
+      import Provenance._
+
+      def zero = Empty
+
+      def append(v1: Provenance, v2: => Provenance) = (v1, v2) match {
+        case (Empty, that) => that
+        case (this0, Empty) => this0
+        case _ => v1 & v2
       }
     }
   }
@@ -247,15 +362,15 @@ trait SemanticAnalysis {
     }
 
     def allOf(xs: Iterable[Provenance]): Provenance = {
-      if (xs.size == 0) Empty
-      else if (xs.size == 1) xs.head
-      else xs.reduce(_ & _)
+      import scalaz.std.iterable._
+
+      xs.concatenate(ProvenanceAndMonoid)
     }
 
     def anyOf(xs: Iterable[Provenance]): Provenance = {
-      if (xs.size == 0) Empty
-      else if (xs.size == 1) xs.head
-      else xs.reduce(_ | _)
+      import scalaz.std.iterable._
+
+      xs.concatenate(ProvenanceOrMonoid)
     }
   }
 
@@ -300,8 +415,8 @@ trait SemanticAnalysis {
           success(Provenance.allOf(args.map(provOf)))
         case Case(cond, expr) => propagate(expr)
         case Match(expr, cases, default) =>
-          success(cases.map(provOf).reduce(_ & _))
-        case Switch(cases, default) => success(cases.map(provOf).reduce(_ & _))
+          success(cases.map(provOf).concatenate(Provenance.ProvenanceAndMonoid))
+        case Switch(cases, default) => success(cases.map(provOf).concatenate(Provenance.ProvenanceAndMonoid))
 
         case IntLiteral(value) => success(Provenance.Value)
 
@@ -311,7 +426,7 @@ trait SemanticAnalysis {
 
         case BoolLiteral(value) => success(Provenance.Value)
 
-        case NullLiteral() => success(Provenance.Value)
+        case NullLiteral => success(Provenance.Value)
 
         case r @ TableRelationAST(_, _) => success(Provenance.Relation(r))
 
@@ -376,7 +491,7 @@ trait SemanticAnalysis {
 
         def annotateFunction(args: List[Node]) =
           (tree.attr(node).map { func =>
-            val typesV = inferredType.map(func.unapply).getOrElse(success(func.domain))
+            val typesV = inferredType.map(func.untype).getOrElse(success(func.domain))
             typesV map (types => (args zip types).toMap)
           }).getOrElse(fail(FunctionNotBound(node)))
 
@@ -422,7 +537,7 @@ trait SemanticAnalysis {
           case FloatLiteral(_) => NA
           case StringLiteral(_) => NA
           case BoolLiteral(_) => NA
-          case NullLiteral() => NA
+          case NullLiteral => NA
           case TableRelationAST(_, _) => NA
           case ExprRelationAST(expr, _) => propagate(expr)
           case JoinRelation(_, _, _, _) => NA
@@ -469,7 +584,7 @@ trait SemanticAnalysis {
           } else {
             (expected.zip(actual).map {
               case (expected, actual) => Type.typecheck(expected, actual)
-            }).sequenceU.map(κ(Unit))
+            }).sequenceU.map(κ(()))
           }
         }
 
@@ -511,7 +626,7 @@ trait SemanticAnalysis {
           case FloatLiteral(value) => succeed(Type.Const(Data.Dec(value)))
           case StringLiteral(value) => succeed(Type.Const(Data.Str(value)))
           case BoolLiteral(value) => succeed(Type.Const(Data.Bool(value)))
-          case NullLiteral() => succeed(Type.Const(Data.Null))
+          case NullLiteral => succeed(Type.Const(Data.Null))
           case TableRelationAST(_, _) => NA
           case ExprRelationAST(expr, _) => propagate(expr)
           case JoinRelation(_, _, _, _) => succeed(Type.Bool)

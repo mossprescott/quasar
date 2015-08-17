@@ -1,11 +1,26 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine
 
+import slamdata.Predef._
+import slamdata.fp._
 import slamdata.engine.fs._
-import slamdata.engine.fp._
-import slamdata.engine.analysis.fixplate._
 
-import scalaz._
-import Scalaz._
+import scalaz._; import Scalaz._
 
 object MRA {
   // foo[*].bar + foo[*].baz
@@ -82,7 +97,7 @@ object MRA {
           else d :: acc.filterNot(d subsumes _)
       }: _*)
 
-      s2.foldMap(identity)(DimId.DimIdMonoid)
+      s2.foldMap(ɩ)(DimId.DimIdMonoid)
     }
 
     def maxSize = size0(_.max)
@@ -137,7 +152,7 @@ object MRA {
         v2 <- s2
       } yield v1.intersect0(v2)
 
-      rez.toList.foldMap(identity)
+      rez.toList.foldMap(ɩ)
     }
 
     private def intersect0(that: DimId): Option[DimId] = (this, that) match {
@@ -203,7 +218,7 @@ object MRA {
 
       override def hashCode = flattenSet.hashCode
 
-      override def equals(that: Any) = that match {
+      override def equals(that: scala.Any) = that match {
         case that @ Product(_, _) => this.flattenSet == that.flattenSet
         case _ => false
       }
@@ -214,15 +229,14 @@ object MRA {
   }
 
   sealed trait DimContract
-  case object DimContract extends DimContract
+  final case object DimContract extends DimContract
 
   sealed trait DimExpand
-  case object DimExpand extends DimExpand
+  final case object DimExpand extends DimExpand
 
   val dimsƒ: LogicalPlan[Dims] => Dims = {
     case ReadF(path) => Dims.set(path)
     case ConstantF(_) => Dims.Value
-    case JoinF(_, _, _, _, _, _) => ???
     case InvokeF(func, args) =>
       val d = Dims.combineAll(args)
 

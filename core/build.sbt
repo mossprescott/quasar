@@ -12,8 +12,25 @@ import ScoverageSbtPlugin._
 
 ScoverageKeys.coverageExcludedPackages := "slamdata.engine.repl;.*RenderTree"
 
-ScoverageKeys.coverageMinimum := 75
+ScoverageKeys.coverageMinimum := 78
 
 ScoverageKeys.coverageFailOnMinimum := true
 
 ScoverageKeys.coverageHighlighting := true
+
+sbtbuildinfo.BuildInfoPlugin.projectSettings
+
+buildInfoKeys := Seq[BuildInfoKey](version)
+
+buildInfoPackage := "slamdata.engine"
+
+wartremoverErrors in (Compile, compile) ++= Warts.allBut(
+  // NB: violation counts are from running `compile`
+  Wart.Any,               // 113
+  Wart.AsInstanceOf,      //  75
+  Wart.IsInstanceOf,      //  79
+  Wart.NoNeedForMonad,    //  62
+  Wart.Nothing,           // 366
+  Wart.Product,           // 180  _ these two are highly correlated
+  Wart.Serializable,      // 182  /
+  Wart.Throw)             // 412

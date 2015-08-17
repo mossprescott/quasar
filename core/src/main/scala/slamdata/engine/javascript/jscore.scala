@@ -1,13 +1,27 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.javascript
 
-import scala.collection.immutable.ListMap
+import slamdata.Predef._
+import slamdata.{RenderTree, Terminal, NonTerminal, RenderedTree}
+import slamdata.recursionschemes._, Recursive.ops._
+import slamdata.fp._
 
-import scalaz._
-import Scalaz._
-
-import slamdata.engine.{RenderTree, Terminal}
-import slamdata.engine.fp._
-import slamdata.engine.analysis.fixplate._
+import scalaz._; import Scalaz._
 
 /**
   ADT for a simplified, composable, core language for JavaScript. Provides only
@@ -19,42 +33,43 @@ object JsCore {
     val js: String
   }
   abstract sealed class BinaryOperator(val js: String) extends Operator
-  case object Add extends BinaryOperator("+")
-  case object BitAnd extends BinaryOperator("&")
-  case object BitLShift extends BinaryOperator("<<")
-  case object BitNot extends BinaryOperator("~")
-  case object BitOr  extends BinaryOperator("|")
-  case object BitRShift  extends BinaryOperator(">>")
-  case object BitXor  extends BinaryOperator("^")
-  case object Lt extends BinaryOperator("<")
-  case object Lte extends BinaryOperator("<=")
-  case object Gt extends BinaryOperator(">")
-  case object Gte extends BinaryOperator(">=")
-  case object Eq extends BinaryOperator("===")
-  case object Neq extends BinaryOperator("!==")
-  case object Div extends BinaryOperator("/")
-  case object In extends BinaryOperator("in")
-  case object And extends BinaryOperator("&&")
-  case object Or extends BinaryOperator("||")
-  case object Mod extends BinaryOperator("%")
-  case object Mult extends BinaryOperator("*")
-  case object Sub extends BinaryOperator("-")
+  final case object Add extends BinaryOperator("+")
+  final case object BitAnd extends BinaryOperator("&")
+  final case object BitLShift extends BinaryOperator("<<")
+  final case object BitNot extends BinaryOperator("~")
+  final case object BitOr  extends BinaryOperator("|")
+  final case object BitRShift  extends BinaryOperator(">>")
+  final case object BitXor  extends BinaryOperator("^")
+  final case object Lt extends BinaryOperator("<")
+  final case object Lte extends BinaryOperator("<=")
+  final case object Gt extends BinaryOperator(">")
+  final case object Gte extends BinaryOperator(">=")
+  final case object Eq extends BinaryOperator("===")
+  final case object Neq extends BinaryOperator("!==")
+  final case object Div extends BinaryOperator("/")
+  final case object In extends BinaryOperator("in")
+  final case object And extends BinaryOperator("&&")
+  final case object Or extends BinaryOperator("||")
+  final case object Mod extends BinaryOperator("%")
+  final case object Mult extends BinaryOperator("*")
+  final case object Sub extends BinaryOperator("-")
+  final case object Instance extends BinaryOperator("instanceof")
 
   abstract sealed class UnaryOperator(val js: String) extends Operator
-  case object Neg extends UnaryOperator("-")
-  case object Not extends UnaryOperator("!")
+  final case object Neg extends UnaryOperator("-")
+  final case object Not extends UnaryOperator("!")
 
-  case class Literal(value: Js.Lit) extends JsCore[Nothing]
-  case class Ident(name: String) extends JsCore[Nothing]
+  final case class Literal(value: Js.Lit) extends JsCore[Nothing]
+  final case class Ident(name: String) extends JsCore[Nothing]
 
-  case class Access[A](expr: A, key: A) extends JsCore[A]
-  case class Call[A](callee: A, args: List[A]) extends JsCore[A]
-  case class New[A](name: String, args: List[A]) extends JsCore[A]
-  case class If[A](condition: A, consequent: A, alternative: A) extends JsCore[A]
-  case class UnOp[A](op: UnaryOperator, arg: A) extends JsCore[A]
-  case class BinOp[A](op: BinaryOperator, left: A, right: A) extends JsCore[A]
+  final case class Access[A](expr: A, key: A) extends JsCore[A]
+  final case class Call[A](callee: A, args: List[A]) extends JsCore[A]
+  final case class New[A](name: String, args: List[A]) extends JsCore[A]
+  final case class If[A](condition: A, consequent: A, alternative: A) extends JsCore[A]
+  final case class UnOp[A](op: UnaryOperator, arg: A) extends JsCore[A]
+  final case class BinOp[A](op: BinaryOperator, left: A, right: A) extends JsCore[A]
   object BinOp {
-    def apply[A](op: BinaryOperator, a1: Term[JsCore], a2: Term[JsCore], a3: Term[JsCore], args: Term[JsCore]*): Term[JsCore] = args.toList match {
+    def apply[A](op: BinaryOperator, a1: Fix[JsCore], a2: Fix[JsCore], a3: Fix[JsCore], args: Fix[JsCore]*): Fix[JsCore] = args.toList match {
       case Nil    => BinOp(op, a1, BinOp(op, a2, a3).fix).fix
       case h :: t => BinOp(op, a1, BinOp(op, a2, a3, h, t: _*)).fix
     }
@@ -62,22 +77,22 @@ object JsCore {
   // TODO: Cond
   // TODO: Fn?
 
-  case class Arr[A](values: List[A]) extends JsCore[A]
-  case class Fun[A](params: List[String], body: A) extends JsCore[A]
+  final case class Arr[A](values: List[A]) extends JsCore[A]
+  final case class Fun[A](params: List[String], body: A) extends JsCore[A]
 
   // NB: at runtime, JS may not preserve the order of fields, but using
   // ListMap here lets us be explicit about what result we'd like to see.
-  case class Obj[A](values: ListMap[String, A]) extends JsCore[A]
+  final case class Obj[A](values: ListMap[String, A]) extends JsCore[A]
 
-  case class Let[A](bindings: Map[String, A], expr: A) extends JsCore[A]
+  final case class Let[A](name: Ident, expr: A, body: A) extends JsCore[A]
 
-  case class SpliceObjects[A](srcs: List[A]) extends JsCore[A]
-  case class SpliceArrays[A](srcs: List[A]) extends JsCore[A]
+  final case class SpliceObjects[A](srcs: List[A]) extends JsCore[A]
+  final case class SpliceArrays[A](srcs: List[A]) extends JsCore[A]
 
-  def Select(expr: Term[JsCore], name: String): Access[Term[JsCore]] =
+  def Select(expr: Fix[JsCore], name: String): Access[Fix[JsCore]] =
     Access(expr, Literal(Js.Str(name)).fix)
 
-  private[javascript] def toUnsafeJs(expr: Term[JsCore]): Js.Expr = expr.simplify.unFix match {
+  private[javascript] def toUnsafeJs(expr: Fix[JsCore]): Js.Expr = expr.simplify.unFix match {
     case Literal(value)      => value
     case Ident(name)         => Js.Ident(name)
     case Access(expr, key)   => smartDeref(toUnsafeJs(expr), toUnsafeJs(key))
@@ -94,20 +109,20 @@ object JsCore {
     case Obj(values)         =>
       Js.AnonObjDecl(values.toList.map { case (k, v) => k -> toUnsafeJs(v) })
 
-    case Let(bindings, expr) =>
-      Js.Let(bindings.mapValues(toUnsafeJs(_)), Nil, toUnsafeJs(expr))
+    case Let(name, expr, body) =>
+      Js.Let(ListMap(name.name -> toUnsafeJs(expr)), Nil, toUnsafeJs(body))
 
     case SpliceObjects(_)    => expr.toJs
     case SpliceArrays(_)     => expr.toJs
   }
 
-  val findFunctionsƒ: JsCore[(Term[JsCore], Set[String])] => Set[String] = {
-    case Call((Term(Ident(name)), _), args) =>
+  val findFunctionsƒ: JsCore[(Fix[JsCore], Set[String])] => Set[String] = {
+    case Call((Fix(Ident(name)), _), args) =>
       Foldable[List].fold(args.map(_._2)) + name
     case js => js.map(_._2).fold
   }
 
-  def copyAllFields(src: Term[JsCore], dst: Term[JsCore]): Js.Stmt = {
+  def copyAllFields(src: Fix[JsCore], dst: Fix[JsCore]): Js.Stmt = {
     val tmp = Js.Ident("__attr")  // TODO: use properly-generated temp name (see #581)
     Js.ForIn(tmp, src.toJs,
       Js.If(
@@ -116,7 +131,7 @@ object JsCore {
         None))
   }
 
-  private def whenDefined(expr: Term[JsCore], body: Js.Expr => Js.Expr, default: => Js.Expr):
+  private def whenDefined(expr: Fix[JsCore], body: Js.Expr => Js.Expr, default: => Js.Expr):
       Js.Expr = {
     expr.simplify.unFix match {
       case Literal(Js.Null) => default
@@ -151,7 +166,7 @@ object JsCore {
     }
 
   // TODO: Remove this once we have actually functionalized everything
-  def safeAssign(lhs: Term[JsCore], rhs: => Term[JsCore]): Js.Expr =
+  def safeAssign(lhs: Fix[JsCore], rhs: => Fix[JsCore]): Js.Expr =
     lhs.simplify.unFix match {
       case Access(obj, key) =>
         whenDefined(obj,
@@ -159,6 +174,10 @@ object JsCore {
           Js.Undefined)
       case _ => Js.BinOp("=", lhs.toJs, rhs.toJs)
     }
+
+  // Check the RHS, but assume the LHS is known to be defined:
+  def unsafeAssign(lhs: Fix[JsCore], rhs: => Fix[JsCore]): Js.Expr =
+    Js.BinOp("=", toUnsafeJs(lhs), rhs.toJs)
 
   implicit val JsCoreTraverse: Traverse[JsCore] = new Traverse[JsCore] {
     def traverseImpl[G[_], A, B](fa: JsCore[A])(f: A => G[B])(implicit G: Applicative[G]): G[JsCore[B]] = {
@@ -174,18 +193,18 @@ object JsCore {
         case Arr(values)            => G.map(values.map(f).sequence)(Arr(_))
         case Fun(params, body)      => G.map(f(body))(Fun(params, _))
         case Obj(values)            => G.map((values ∘ f).sequence)(Obj(_))
-        case Let(bindings, expr)    => G.apply2((bindings ∘ f).sequence, f(expr))(Let(_, _))
+        case Let(name, expr, body)  => G.apply2(f(expr), f(body))(Let(name, _, _))
         case SpliceObjects(srcs)    => G.map(srcs.map(f).sequence)(SpliceObjects(_))
         case SpliceArrays(srcs)     => G.map(srcs.map(f).sequence)(SpliceArrays(_))
       }
     }
   }
 
-  implicit class UnFixedJsCoreOps(expr: JsCore[Term[JsCore]]) {
-    def fix = Term[JsCore](expr)
+  implicit class UnFixedJsCoreOps(expr: JsCore[Fix[JsCore]]) {
+    def fix = Fix[JsCore](expr)
   }
 
-  implicit class JsCoreOps(expr: Term[JsCore]) {
+  implicit class JsCoreOps(expr: Fix[JsCore]) {
     def toJs: Js.Expr = expr.simplify.unFix match {
       case Literal(value)      => value
       case Ident(name)         => Js.Ident(name)
@@ -196,15 +215,15 @@ object JsCore {
           smartDeref(_, key.toJs),
           Js.Undefined)
 
-      case Call(Term(Access(Term(New(name, args1)), Term(Literal(Js.Str(mName))))), args2)  =>
+      case Call(Fix(Access(Fix(New(name, args1)), Fix(Literal(Js.Str(mName))))), args2)  =>
         // NB: if we are explicitly constructing a value, we presumably know its fields,
         // so no need to check them, but the args may still come from an unreliable source.
         Js.Call(Js.Select(Js.New(Js.Call(Js.Ident(name), args1.map(_.toJs))), mName), args2.map(_.toJs))
-      case Call(Term(Access(arr @ Term(Arr(_)), Term(Literal(Js.Str(mName))))), args) =>
+      case Call(Fix(Access(arr @ Fix(Arr(_)), Fix(Literal(Js.Str(mName))))), args) =>
         // NB: if we are explicitly constructing a value, we presumably know its fields,
         // so no need to check them.
         Js.Call(Js.Select(arr.toJs, mName), args.map(_.toJs))
-      case Call(expr @ Term(Access(_, _)), args) =>
+      case Call(expr @ Fix(Access(_, _)), args) =>
         // NB: check any other access and the callee together.
         whenDefined(expr, Js.Call(_, args.map(_.toJs)), Js.Undefined)
       case Call(callee, args)  => Js.Call(callee.toJs, args.map(_.toJs))
@@ -226,15 +245,15 @@ object JsCore {
       case Obj(values)         =>
         Js.AnonObjDecl(values.toList.map { case (k, v) => k -> v.toJs })
 
-      case Let(bindings, expr) =>
-        Js.Let(bindings.mapValues(_.toJs), Nil, expr.toJs)
+      case Let(name, expr, body) =>
+        Js.Let(ListMap(name.name -> expr.toJs), Nil, body.toJs)
 
       case s @ SpliceObjects(srcs)    =>
         val tmp = Ident("__rez")  // TODO: use properly-generated temp name (see #581)
         Js.Let(
           Map(tmp.name -> Js.AnonObjDecl(Nil)),
           srcs.flatMap {
-            case Term(Obj(values)) => values.map { case (k, v) => Js.BinOp("=", smartDeref(tmp.fix.toJs, Js.Str(k)), v.toJs) }
+            case Fix(Obj(values)) => values.map { case (k, v) => Js.BinOp("=", smartDeref(tmp.fix.toJs, Js.Str(k)), v.toJs) }
             case src => copyAllFields(src, tmp.fix) :: Nil
           },
           tmp.fix.toJs)
@@ -245,7 +264,7 @@ object JsCore {
           Js.Let(
             Map(tmp.name -> Js.AnonElem(Nil)),
             srcs.flatMap {
-              case Term(Arr(values)) => values.map(v => Js.Call(Js.Select(tmp.fix.toJs, "push"), List(v.toJs)))
+              case Fix(Arr(values)) => values.map(v => Js.Call(Js.Select(tmp.fix.toJs, "push"), List(v.toJs)))
               case src => List(
                 Js.ForIn(Js.Ident(elem.name), src.toJs,
                   Js.If(
@@ -256,20 +275,57 @@ object JsCore {
             tmp.fix.toJs)
     }
 
-    def simplify: Term[JsCore] = {
+    def simplify: Fix[JsCore] = {
       expr.rewrite(_.unFix match {
-        case Access(Term(Obj(values)), Term(Literal(Js.Str(name)))) =>
+        case Access(Fix(Obj(values)), Fix(Literal(Js.Str(name)))) =>
           values.get(name)
-        case If(cond0, Term(If(cond1, cons, alt1)), alt0) if alt0 == alt1 =>
+        case If(cond0, Fix(If(cond1, cons, alt1)), alt0) if alt0 == alt1 =>
           Some(If(BinOp(And, cond0, cond1).fix, cons, alt0).fix)
-        case _ => None
+
+        // NB: inline simple names and selects (e.g. `x`, `x.y`, and `x.y.z`)
+        case Let(name, expr @ Fix(Ident(_)), body) =>
+          Some(body.substitute(name.fix, expr))
+        case Let(name, expr @ Fix(Access(Fix(Ident(_)), Fix(Literal(Js.Str(_))))), body) =>
+          Some(body.substitute(name.fix, expr))
+        case Let(name, expr @ Fix(Access(Fix(Access(Fix(Ident(_)), Fix(Literal(Js.Str(_))))), Fix(Literal(Js.Str(_))))), body) =>
+          Some(body.substitute(name.fix, expr))
+
+        // NB: inline object constructors where the body only extracts one field
+        case Let(bound, Fix(Obj(values)), Fix(Access(Fix(name), Fix(Literal(Js.Str(key))))))
+          if bound == name => values.get(key)
+
+        case x => None
       })
+    }
+
+    def substitute(oldExpr: Fix[JsCore], newExpr: Fix[JsCore]): Fix[JsCore] = {
+      def loop(x: Fix[JsCore], inScope: Set[Fix[JsCore]]): Fix[JsCore] =
+        if (x == oldExpr && !(inScope contains x)) newExpr
+        else
+          x.unFix match {
+            case Let(name, expr, body) => Let(name, loop(expr, inScope), loop(body, inScope + name.fix)).fix
+            case Fun(params, body)     => Fun(params, loop(body, inScope ++ params.map(Ident(_).fix).toSet)).fix
+
+            case Access(expr, key)     => Access(loop(expr, inScope), loop(key, inScope)).fix
+            case Arr(values)           => Arr(values.map(loop(_, inScope))).fix
+            case BinOp(op, l, r)       => BinOp(op, loop(l, inScope), loop(r, inScope)).fix
+            case Call(callee, args)    => Call(loop(callee, inScope), args.map(loop(_, inScope))).fix
+            case id @ Ident(_)         => id.fix
+            case If(cond, cons, alt)   => If(loop(cond, inScope), loop(cons, inScope), loop(alt, inScope)).fix
+            case lit @ Literal(_)      => lit.fix
+            case New(name, args)       => New(name, args.map(loop(_, inScope))).fix
+            case Obj(values)           => Obj(values ∘ (x => loop(x, inScope))).fix
+            case SpliceArrays(srcs)    => SpliceArrays(srcs.map(loop(_, inScope))).fix
+            case SpliceObjects(srcs)   => SpliceObjects(srcs.map(loop(_, inScope))).fix
+            case UnOp(op, x)           => UnOp(op, loop(x, inScope)).fix
+          }
+      loop(expr, Set.empty)
     }
   }
 
   import slamdata.engine.physical.mongodb.{Bson}
 
-  def unapply(value: Bson): Option[Term[JsCore]] = value match {
+  def unapply(value: Bson): Option[Fix[JsCore]] = value match {
     case Bson.Null         => Some(JsCore.Literal(Js.Null).fix)
     case Bson.Text(str)    => Some(JsCore.Literal(Js.Str(str)).fix)
     case Bson.Bool(value)  => Some(JsCore.Literal(Js.Bool(value)).fix)
@@ -282,24 +338,93 @@ object JsCore {
 
     case _ => None
   }
+
+  implicit val JsCoreRenderTree = new RenderTree[Fix[JsCore]] {
+    val nodeType = List("JsCore")
+
+    def simpleƒ(v: JsCore[Boolean]): Boolean = v match {
+      case Ident(_)            => true
+      case Literal(_)          => true
+
+      case Arr(values)         => values.all(_ == true)
+      case Access(expr, key)   => expr && key
+      case BinOp(_, l, r)      => l && r
+      case Call(callee, args)  => callee && args.all(_ == true)
+      case If(cond, cons, alt) => cond && cons && alt
+      case Let(_, expr, body)  => expr && body
+      case New(_, args)        => args.all(_ == true)
+      case UnOp(_, x)          => x
+
+      case Fun(_, body)        => false
+      case Obj(_)              => false
+      case SpliceArrays(_)     => false
+      case SpliceObjects(_)    => false
+    }
+
+    def renderSimple(v: Fix[JsCore]): Option[RenderedTree] =
+      if (v.cata(simpleƒ)) Some(Terminal(nodeType, Some(toUnsafeJs(v).pprint(0))))
+      else None
+
+    def render(v: Fix[JsCore]) = v.unFix match {
+      case Ident(name)           => Terminal("Ident" :: nodeType, Some(name))
+      case Literal(js)           => Terminal("Literal" :: nodeType, Some(js.pprint(0)))
+
+      case Arr(values)           => renderSimple(v).getOrElse(
+        NonTerminal("Arr" :: nodeType, None, values.map(render)))
+      case Access(expr, key)     => renderSimple(v).getOrElse(
+        NonTerminal("Access" :: nodeType, None, List(render(expr), render(key))))
+      case BinOp(op, l, r)       => renderSimple(v).getOrElse(
+        NonTerminal("BinOp" :: nodeType, Some(op.js), List(render(l), render(r))))
+      case Call(callee, args)    => renderSimple(v).getOrElse(
+        NonTerminal("Call" :: nodeType, None, render(callee) :: args.map(render)))
+      case If(cond, cons, alt)   => renderSimple(v).getOrElse(
+        NonTerminal("If" :: nodeType, None, List(render(cond), render(cons), render(alt))))
+      case New(name, args)       => renderSimple(v).getOrElse(
+        NonTerminal("New" :: nodeType, Some(name), args.map(render)))
+      case UnOp(op, x)           => renderSimple(v).getOrElse(
+        NonTerminal("UnOp" :: nodeType, Some(op.js), List(render(x))))
+
+      case Obj(values)                  =>
+        NonTerminal("Obj" :: nodeType, None,
+          values.toList.map { case (n, v) =>
+            if (v.cata(simpleƒ)) Terminal("Key" :: nodeType, Some(n + ": " + toUnsafeJs(v).pprint(0)))
+            else NonTerminal("Key" :: nodeType, Some(n), List(render(v)))
+          })
+      case SpliceArrays(srcs)           => NonTerminal("SpliceArrays" :: nodeType, None, srcs.map(render))
+      case SpliceObjects(srcs)          => NonTerminal("SpliceObjects" :: nodeType, None, srcs.map(render))
+      case Let(Ident(name), expr, body) => NonTerminal("Let" :: nodeType, Some(name), List(render(expr), render(body)))
+      case Fun(params, body)            => NonTerminal("Fun" :: nodeType, Some(params.mkString(", ")), List(render(body)))
+    }
+  }
 }
 
-case class JsMacro(expr: Term[JsCore] => Term[JsCore]) {
-  def apply(x: Term[JsCore]) = expr(x)
+final case class JsFn(base: JsCore.Ident, expr: Fix[JsCore]) {
+  def apply(x: Fix[JsCore]) = expr.substitute(base.fix, x)
 
-  def >>>(right: JsMacro): JsMacro = JsMacro(x => right.expr(this.expr(x)))
+  def >>>(that: JsFn): JsFn =
+    if (this == JsFn.identity) that
+    else if (that == JsFn.identity) this
+    else JsFn(this.base, JsCore.Let(that.base, this.expr, that.expr).fix.simplify)
 
-  override def toString = JsCore.toUnsafeJs(expr(JsCore.Ident("_").fix).simplify).render(0)
+  override def toString = JsCore.toUnsafeJs(apply(JsCore.Ident("_").fix).simplify).pprint(0)
 
-  private val impossibleName = JsCore.Ident("\\").fix
-  override def equals(obj: Any) = obj match {
-    case JsMacro(expr2) => expr(impossibleName).simplify == expr2(impossibleName).simplify
+  val commonBase = JsCore.Ident("$")
+  override def equals(obj: scala.Any) = obj match {
+    case that @ JsFn(_, _) => apply(commonBase.fix).simplify == that.apply(commonBase.fix).simplify
     case _ => false
   }
-  override def hashCode = expr(impossibleName).simplify.hashCode
+  override def hashCode = apply(commonBase.fix).simplify.hashCode
 }
-object JsMacro {
-  implicit val JsMacroRenderTree = new RenderTree[JsMacro] {
-    def render(v: JsMacro) = Terminal(v.toString, List("JsMacro"))
+object JsFn {
+  val base = JsCore.Ident("__val")
+
+  val identity = {
+    JsFn(base, base.fix)
+  }
+
+  def const(x: Fix[JsCore]) = JsFn(JsCore.Ident("__unused"), x)
+
+  implicit val JsFnRenderTree = new RenderTree[JsFn] {
+    def render(v: JsFn) = RenderTree[Fix[JsCore]].render(v(JsCore.Ident("_").fix))
   }
 }

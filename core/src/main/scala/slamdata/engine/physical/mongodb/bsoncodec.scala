@@ -1,34 +1,44 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.physical.mongodb
 
-import scalaz._
-import Scalaz._
+import slamdata.Predef._
+import slamdata.fp._
+import slamdata.engine._; import Planner._
 
-import slamdata.engine._
-import slamdata.engine.fp._
+import scalaz._; import Scalaz._
 
 object BsonCodec {
-  trait ConversionError extends Error
-  case class InvalidObjectIdError(data: Data.Id) extends Error {
-    def message = "Not a valid MongoDB ObjectId: " + data.value
-  }
-
-  def fromData(data: Data): InvalidObjectIdError \/ Bson = {
+  def fromData(data: Data): PlannerError \/ Bson = {
     data match {
       case Data.Null => \/ right (Bson.Null)
 
       case Data.Str(value) => \/ right (Bson.Text(value))
 
-      case Data.True => \/ right (Bson.Bool(true))
-      case Data.False => \/ right (Bson.Bool(false))
+      case Data.Bool(v) => \/ right (Bson.Bool(v))
 
       case Data.Dec(value) => \/ right (Bson.Dec(value.toDouble))
       case Data.Int(value) => \/ right (Bson.Int64(value.toLong))
 
       case Data.Obj(value) =>
         type MapF[X] = Map[String, X]
-        type Right[X] = InvalidObjectIdError \/ X
+        type Right[X] = PlannerError \/ X
 
-        val map: MapF[InvalidObjectIdError \/ Bson] = value.mapValues(fromData _)
+        val map: MapF[PlannerError \/ Bson] = value.mapValues(fromData _)
 
         Traverse[MapF].sequence[Right, Bson](map).map((x: MapF[Bson]) => Bson.Doc(x.toList.toListMap))
 
@@ -53,7 +63,7 @@ object BsonCodec {
 
       case Data.Binary(value) => \/ right (Bson.Binary(value.toArray[Byte]))
 
-      case id @ Data.Id(value) => Bson.ObjectId(value) \/> InvalidObjectIdError(id)
+      case Data.Id(value) => Bson.ObjectId(value) \/> ObjectIdFormatError(value)
 
       case Data.NA => \/ right (Bson.Undefined)
     }

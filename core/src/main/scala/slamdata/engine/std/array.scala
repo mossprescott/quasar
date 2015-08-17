@@ -1,19 +1,33 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.std
 
-import scalaz._
+import slamdata.Predef._
+import slamdata.fp._
+import slamdata.engine.{Data, Func, Type, Mapping, SemanticError}, SemanticError._
 
-import slamdata.engine.{Data, Func, Type, Mapping, SemanticError}
-import slamdata.engine.fp._
-
-import SemanticError._
-import Validation.{success, failure}
-import NonEmptyList.nel
+import scalaz._, NonEmptyList.nel, Validation.{success, failure}
 
 trait ArrayLib extends Library {
   val ArrayLength = Mapping(
     "array_length",
     "Gets the length of a given dimension of an array.",
     Type.AnyArray :: Type.Int :: Nil,
+    noSimplification,
     partialTyperV {
       case _ :: Type.Const(Data.Int(dim)) :: Nil if (dim < 1) =>
         failure(nel(GenericError("array dimension out of range"), Nil))
@@ -31,7 +45,13 @@ trait ArrayLib extends Library {
     "(in)",
     "Determines whether a value is in a given array.",
     Type.Top :: Type.AnyArray :: Nil,
-    κ(success(Type.Bool)),
+    noSimplification,
+    partialTyper {
+      case List(Type.Const(x), Type.Const(Data.Arr(arr))) =>
+        Type.Const(Data.Bool(arr.contains(x)))
+      case List(_,             Type.Const(Data.Arr(_)))   => Type.Bool
+      case List(_,             _)                         => Type.Bool
+    },
     Type.typecheck(_, Type.Bool) map κ(Type.Top :: Type.AnyArray :: Nil))
 
   def functions = ArrayLength :: In :: Nil

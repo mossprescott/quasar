@@ -1,7 +1,8 @@
 package slamdata.engine
 
-import slamdata.engine.analysis.fixplate._
-import slamdata.engine.analysis._
+import slamdata.Predef._
+
+import slamdata.recursionschemes._
 import slamdata.engine.sql.{SQLParser, Query}
 import slamdata.engine.std._
 import slamdata.engine.fs._
@@ -14,30 +15,27 @@ import org.specs2.matcher.{Matcher, Expectable}
 trait CompilerHelpers extends Specification with TermLogicalPlanMatchers {
   import StdLib._
   import structural._
-  import math._
   import LogicalPlan._
   import SemanticAnalysis._
 
-  val compile: String => String \/ Term[LogicalPlan] = query => {
-    val parser = new SQLParser()
+  val compile: String => String \/ Fix[LogicalPlan] = query => {
     for {
-      ast    <- parser.parse(Query(query)).leftMap(e => e.toString())
-      select <- SQLParser.interpretPaths(ast, Path.Root, Path("")).leftMap(e => e.toString())
-      attr   <- AllPhases(tree(select)).leftMap(e => e.toString()).disjunction
-      cld    <- Compiler.compile(attr).leftMap(e => e.toString())
+      select <- SQLParser.parseInContext(Query(query), Path("./")).leftMap(_.toString)
+      attr   <- AllPhases(tree(select)).leftMap(_.toString).disjunction
+      cld    <- Compiler.compile(attr).leftMap(_.toString)
     } yield cld
   }
 
-  def compileExp(query: String): Term[LogicalPlan] =
+  def compileExp(query: String): Fix[LogicalPlan] =
     compile(query).fold(e => throw new RuntimeException("could not compile query for expected value: " + query + "; " + e), v => v)
 
-  def testLogicalPlanCompile(query: String, expected: Term[LogicalPlan]) = {
+  def testLogicalPlanCompile(query: String, expected: Fix[LogicalPlan]) = {
     compile(query).toEither must beRight(equalToPlan(expected))
   }
 
-  def read(name: String): Term[LogicalPlan] = LogicalPlan.Read(fs.Path(name))
+  def read(name: String): Fix[LogicalPlan] = LogicalPlan.Read(fs.Path(name))
 
-  def makeObj(ts: (String, Term[LogicalPlan])*): Term[LogicalPlan] =
+  def makeObj(ts: (String, Fix[LogicalPlan])*): Fix[LogicalPlan] =
     MakeObjectN(ts.map(t => Constant(Data.Str(t._1)) -> t._2): _*)
 
 }

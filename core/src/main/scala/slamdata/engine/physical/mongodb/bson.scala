@@ -1,32 +1,48 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.physical.mongodb
 
-import slamdata.engine.fp._
+import slamdata.Predef._
+import slamdata.fp._
 import slamdata.engine.javascript._
 
+import scala.Any
+import scala.collection.JavaConverters._
+import scala.Predef.{
+  boolean2Boolean, double2Double, int2Integer, long2Long,
+  Boolean2boolean, Double2double, Integer2int, Long2long}
+
+import org.bson.types
 import org.threeten.bp.{Instant, ZoneOffset}
 import org.threeten.bp.temporal.{ChronoUnit}
-
-import com.mongodb._
-import org.bson.types
-
-import collection.immutable.ListMap
-import collection.JavaConverters._
-import scalaz._
-import Scalaz._
+import scalaz._; import Scalaz._
 
 /**
  * A type-safe ADT for Mongo's native data format. Note that this representation
  * is not suitable for efficiently storing large quantities of data.
  */
 sealed trait Bson {
-  def repr: Object
+  def repr: java.lang.Object
   def toJs: Js.Expr
 }
 
 object Bson {
-  def fromRepr(obj: Object): Bson = {
-    import collection.JavaConversions._
-
+  def fromRepr(obj: java.lang.Object): Bson = {
+    @SuppressWarnings(Array("org.brianmckenna.wartremover.warts.Null"))
     def loop(v: Any): Bson = v match {
       case null                       => Null
       case x: String                  => Text(x)
@@ -34,8 +50,8 @@ object Bson {
       case x: java.lang.Integer       => Int32(x)
       case x: java.lang.Long          => Int64(x)
       case x: java.lang.Double        => Dec(x)
-      case list: java.util.ArrayList[_] => Arr(list.map(loop).toList)
-      case obj: org.bson.Document     => Doc(obj.keySet.toList.map(k => k -> loop(obj.get(k))).toListMap)
+      case list: java.util.ArrayList[_] => Arr(list.asScala.map(loop).toList)
+      case obj: org.bson.Document     => Doc(obj.keySet.asScala.toList.map(k => k -> loop(obj.get(k))).toListMap)
       case x: java.util.Date          => Date(Instant.ofEpochMilli(x.getTime))
       case x: types.ObjectId          => ObjectId(x.toByteArray)
       case x: types.Binary            => Binary(x.getData)
@@ -63,17 +79,17 @@ object Bson {
     loop(obj)
   }
 
-  case class Dec(value: Double) extends Bson {
+  final case class Dec(value: Double) extends Bson {
     def repr = value: java.lang.Double
     def toJs = Js.Num(value, true)
   }
-  case class Text(value: String) extends Bson {
+  final case class Text(value: String) extends Bson {
     def repr = value
     def toJs = Js.Str(value)
   }
-  case class Binary(value: ImmutableArray[Byte]) extends Bson {
+  final case class Binary(value: ImmutableArray[Byte]) extends Bson {
     def repr = value.toArray[Byte]
-    def toJs = Js.Str(new sun.misc.BASE64Encoder().encode(value.toArray))
+    def toJs = Js.Call(Js.Ident("BinData"), List(Js.Num(0, false), Js.Str(new sun.misc.BASE64Encoder().encode(value.toArray))))
 
     override def toString = "Binary(Array[Byte](" + value.mkString(", ") + "))"
 
@@ -86,15 +102,15 @@ object Bson {
   object Binary {
     def apply(array: Array[Byte]): Binary = Binary(ImmutableArray.fromArray(array))
   }
-  case class Doc(value: ListMap[String, Bson]) extends Bson {
+  final case class Doc(value: ListMap[String, Bson]) extends Bson {
     def repr: org.bson.Document = new org.bson.Document((value ∘ (_.repr)).asJava)
     def toJs = Js.AnonObjDecl((value ∘ (_.toJs)).toList)
   }
-  case class Arr(value: List[Bson]) extends Bson {
+  final case class Arr(value: List[Bson]) extends Bson {
     def repr = new java.util.ArrayList(value.map(_.repr).asJava)
     def toJs = Js.AnonElem(value ∘ (_.toJs))
   }
-  case class ObjectId(value: ImmutableArray[Byte]) extends Bson {
+  final case class ObjectId(value: ImmutableArray[Byte]) extends Bson {
     def repr = new types.ObjectId(value.toArray[Byte])
 
     def str = repr.toHexString
@@ -116,51 +132,52 @@ object Bson {
       \/.fromTryCatchNonFatal(new types.ObjectId(str)).toOption.map(oid => ObjectId(oid.toByteArray))
     }
   }
-  case class Bool(value: Boolean) extends Bson {
+  final case class Bool(value: Boolean) extends Bson {
     def repr = value: java.lang.Boolean
     def toJs = Js.Bool(value)
   }
-  case class Date(value: Instant) extends Bson {
+  final case class Date(value: Instant) extends Bson {
     def repr = new java.util.Date(value.toEpochMilli)
     def toJs =
-      Js.Call(Js.Ident("ISODate"), List(Js.Num(value.toEpochMilli, false)))
+      Js.Call(Js.Ident("ISODate"), List(Js.Str(value.toString)))
   }
-  case object Null extends Bson {
+  final case object Null extends Bson {
+    @SuppressWarnings(Array("org.brianmckenna.wartremover.warts.Null"))
     def repr = null
     override def toJs = Js.Null
   }
 
   /** DEPRECATED in the spec, but the 3.0 Mongo driver returns it to us. */
-  case object Undefined extends Bson {
+  final case object Undefined extends Bson {
     def repr = new org.bson.BsonUndefined
     override def toJs = Js.Undefined
   }
-  case class Regex(value: String) extends Bson {
+  final case class Regex(value: String) extends Bson {
     def repr = java.util.regex.Pattern.compile(value)
     def toJs = Js.New(Js.Call(Js.Ident("RegExp"), List(Js.Str(value))))
   }
-  case class JavaScript(value: Js.Expr) extends Bson {
-    def repr = new types.Code(value.render(2))
+  final case class JavaScript(value: Js.Expr) extends Bson {
+    def repr = new types.Code(value.pprint(2))
     def toJs = value
   }
-  case class JavaScriptScope(code: Js.Expr, doc: Doc) extends Bson {
-    def repr = new types.CodeWithScope(code.render(2), doc.repr)
+  final case class JavaScriptScope(code: Js.Expr, doc: Doc) extends Bson {
+    def repr = new types.CodeWithScope(code.pprint(2), doc.repr)
     // FIXME: this loses scope, but I don’t know what it should look like
     def toJs = code
   }
-  case class Symbol(value: String) extends Bson {
+  final case class Symbol(value: String) extends Bson {
     def repr = new types.Symbol(value)
     def toJs = Js.Ident(value)
   }
-  case class Int32(value: Int) extends Bson {
+  final case class Int32(value: Int) extends Bson {
     def repr = value: java.lang.Integer
     def toJs = Js.Call(Js.Ident("NumberInt"), List(Js.Num(value, false)))
   }
-  case class Int64(value: Long) extends Bson {
+  final case class Int64(value: Long) extends Bson {
     def repr = value: java.lang.Long
     def toJs = Js.Call(Js.Ident("NumberLong"), List(Js.Num(value, false)))
   }
-  case class Timestamp private (epochSecond: Int, ordinal: Int) extends Bson {
+  final case class Timestamp private (epochSecond: Int, ordinal: Int) extends Bson {
     def repr = new types.BSONTimestamp(epochSecond, ordinal)
     def toJs = Js.Call(Js.Ident("Timestamp"),
       List(Js.Num(epochSecond, false), Js.Num(ordinal, false)))
@@ -170,11 +187,11 @@ object Bson {
     def apply(instant: Instant, ordinal: Int): Timestamp =
       Timestamp((instant.toEpochMilli/1000).toInt, ordinal)
   }
-  case object MinKey extends Bson {
+  final case object MinKey extends Bson {
     def repr = new types.MinKey
     def toJs = Js.Ident("MinKey")
   }
-  case object MaxKey extends Bson {
+  final case object MaxKey extends Bson {
     def repr = new types.MaxKey
     def toJs = Js.Ident("MaxKey")
   }
@@ -186,25 +203,25 @@ sealed trait BsonType {
 
 object BsonType {
   private[BsonType] abstract class AbstractType(val ordinal: Int) extends BsonType
-  case object Dec extends AbstractType(1)
-  case object Text extends AbstractType(2)
-  case object Doc extends AbstractType(3)
-  case object Arr extends AbstractType(4)
-  case object Binary extends AbstractType(5)
-  case object Undefined extends AbstractType(6)
-  case object ObjectId extends AbstractType(7)
-  case object Bool extends AbstractType(8)
-  case object Date extends AbstractType(9)
-  case object Null extends AbstractType(10)
-  case object Regex extends AbstractType(11)
-  case object JavaScript extends AbstractType(13)
-  case object JavaScriptScope extends AbstractType(15)
-  case object Symbol extends AbstractType(14)
-  case object Int32 extends AbstractType(16)
-  case object Int64 extends AbstractType(18)
-  case object Timestamp extends AbstractType(17)
-  case object MinKey extends AbstractType(255)
-  case object MaxKey extends AbstractType(127)
+  final case object Dec extends AbstractType(1)
+  final case object Text extends AbstractType(2)
+  final case object Doc extends AbstractType(3)
+  final case object Arr extends AbstractType(4)
+  final case object Binary extends AbstractType(5)
+  final case object Undefined extends AbstractType(6)
+  final case object ObjectId extends AbstractType(7)
+  final case object Bool extends AbstractType(8)
+  final case object Date extends AbstractType(9)
+  final case object Null extends AbstractType(10)
+  final case object Regex extends AbstractType(11)
+  final case object JavaScript extends AbstractType(13)
+  final case object JavaScriptScope extends AbstractType(15)
+  final case object Symbol extends AbstractType(14)
+  final case object Int32 extends AbstractType(16)
+  final case object Int64 extends AbstractType(18)
+  final case object Timestamp extends AbstractType(17)
+  final case object MinKey extends AbstractType(255)
+  final case object MaxKey extends AbstractType(127)
 }
 
 sealed trait BsonField {
@@ -226,21 +243,30 @@ sealed trait BsonField {
   }
 
   def \\ (tail: List[BsonField]): BsonField = if (tail.isEmpty) this else this match {
-    case Path(p) => Path(NonEmptyList.nel(p.head, p.tail ::: tail.flatMap(_.flatten)))
-    case l: Leaf => Path(NonEmptyList.nel(l, tail.flatMap(_.flatten)))
+    case Path(p) => Path(NonEmptyList.nel(p.head, p.tail ::: tail.flatMap(_.flatten.toList)))
+    case l: Leaf => Path(NonEmptyList.nel(l, tail.flatMap(_.flatten.toList)))
   }
 
-  def flatten: List[Leaf]
+  def flatten: NonEmptyList[Leaf]
 
-  def parent: Option[BsonField] = BsonField(flatten.reverse.drop(1).reverse)
+  def parent: Option[BsonField] =
+    BsonField(flatten.toList.dropRight(1))
 
-  def startsWith(that: BsonField) = this.flatten.startsWith(that.flatten)
+  def startsWith(that: BsonField) =
+    this.flatten.toList.startsWith(that.flatten.toList)
 
-  def toJs: JsMacro =
-    this.flatten.foldLeft(JsMacro(identity))((acc, leaf) =>
+  def relativeTo(that: BsonField): Option[BsonField] = {
+    val f1 = flatten.toList
+    val f2 = that.flatten.toList
+    if (f1 startsWith f2) BsonField(f1.drop(f2.length))
+    else None
+  }
+
+  def toJs: JsFn =
+    this.flatten.foldLeft(JsFn.identity)((acc, leaf) =>
       leaf match {
-        case Name(v)  => JsMacro(arg => JsCore.Access(acc(arg), JsCore.Literal(Js.Str(v)).fix).fix)
-        case Index(v) => JsMacro(arg => JsCore.Access(acc(arg), JsCore.Literal(Js.Num(v, false)).fix).fix)
+        case Name(v)  => JsFn(JsFn.base, JsCore.Access(acc(JsFn.base.fix), JsCore.Literal(Js.Str(v)).fix).fix)
+        case Index(v) => JsFn(JsFn.base, JsCore.Access(acc(JsFn.base.fix), JsCore.Literal(Js.Num(v, false)).fix).fix)
       })
 
   override def hashCode = this match {
@@ -262,9 +288,7 @@ sealed trait BsonField {
 
 object BsonField {
   sealed trait Root
-  final case object Root extends Root {
-    override def toString = "BsonField.Root"
-  }
+  final case object Root extends Root
 
   def apply(v: List[BsonField.Leaf]): Option[BsonField] = v match {
     case Nil => None
@@ -275,7 +299,7 @@ object BsonField {
   sealed trait Leaf extends BsonField {
     def asText = Path(NonEmptyList(this)).asText
 
-    def flatten: List[Leaf] = this :: Nil
+    def flatten = NonEmptyList(this)
 
     // Distinction between these is artificial as far as BSON concerned so you
     // can always translate a leaf to a Name (but not an Index since the key might
@@ -286,15 +310,15 @@ object BsonField {
     }
   }
 
-  case class Name(value: String) extends Leaf {
+  final case class Name(value: String) extends Leaf {
     override def toString = s"""BsonField.Name("$value")"""
   }
-  case class Index(value: Int) extends Leaf {
+  final case class Index(value: Int) extends Leaf {
     override def toString = s"BsonField.Index($value)"
   }
 
-  private case class Path(values: NonEmptyList[Leaf]) extends BsonField {
-    def flatten: List[Leaf] = values.list
+  private final case class Path(values: NonEmptyList[Leaf]) extends BsonField {
+    def flatten = values
 
     def asText = (values.list.zipWithIndex.map {
       case (Name(value), 0) => value
@@ -305,20 +329,4 @@ object BsonField {
 
     override def toString = values.list.mkString(" \\ ")
   }
-
-  private lazy val TempNames:   EphemeralStream[BsonField.Name]  = EphemeralStream.iterate(0)(_ + 1).map(i => BsonField.Name("__sd_tmp_" + i.toString))
-  private lazy val TempIndices: EphemeralStream[BsonField.Index] = EphemeralStream.iterate(0)(_ + 1).map(i => BsonField.Index(i))
-
-  def genUniqName(v: Iterable[BsonField.Name]): BsonField.Name =
-    genUniqNames(1, v).head
-
-  def genUniqNames(n: Int, v: Iterable[BsonField.Name]): List[BsonField.Name] =
-    TempNames.filter(n => !v.toSet.contains(n)).take(n).toList
-
-  def genUniqIndex(v: Iterable[BsonField.Index]): BsonField.Index =
-    genUniqIndices(1, v).head
-
-  def genUniqIndices(n: Int, v: Iterable[BsonField.Index]):
-      List[BsonField.Index] =
-    TempIndices.filter(n => !v.toSet.contains(n)).take(n).toList
 }

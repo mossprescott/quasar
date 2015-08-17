@@ -1,13 +1,13 @@
 package slamdata.engine.sql
 
+import slamdata.Predef._
+import slamdata.RenderTree
+import slamdata.fp._
+import slamdata.specs2._
+
 import org.specs2.mutable._
 import org.specs2.ScalaCheck
-
-import slamdata.engine._
-import slamdata.engine.fp._
-
-import scalaz._
-import Scalaz._
+import scalaz._, Scalaz._
 
 class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatchers {
   import SqlQueries._
@@ -158,7 +158,7 @@ class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatche
     }
 
     "parse numeric literals" in {
-      parser.parse("select 1, 2.0, 3000000, 2.998e8, -1.602E-19, 1e+6") should beAnyRightDisj
+      parser.parse("select 1, 2.0, 3000000, 2.998e8, -1.602E-19, 1e+6") should beRightDisjunction
     }
 
     "parse date, time, timestamp, and id literals" in {
@@ -168,7 +168,7 @@ class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatche
                   and ts < timestamp '2014-11-16T03:00:00Z' + interval 'PT1H'
                   and _id != oid 'abc123'"""
 
-      parser.parse(q) must beAnyRightDisj
+      parser.parse(q) must beRightDisjunction
     }
 
     "parse IS and IS NOT" in {
@@ -178,7 +178,7 @@ class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatche
                   and c IS TRUE
                   and d IS NOT FALSE"""
 
-      parser.parse(q) must beAnyRightDisj
+      parser.parse(q) must beRightDisjunction
     }
 
     "parse nested joins left to right" in {
@@ -189,7 +189,7 @@ class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatche
 
     "parse nested joins with parens" in {
       val q = "select * from a cross join (b cross join c)"
-      parser.parse(q) must beRightDisj(
+      parser.parse(q) must beRightDisjunction(
         Select(
           SelectAll,
           List(Proj(Splice(None), None)),
@@ -203,7 +203,7 @@ class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatche
     }
 
     "parse array constructor and concat op" in {
-      parser.parse("select loc || [ pop ] from zips") must beRightDisj(
+      parser.parse("select loc || [ pop ] from zips") must beRightDisjunction(
         Select(SelectAll,
           List(
             Proj(
@@ -222,7 +222,7 @@ class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatche
       val parsed = parser.parse(node.sql)
 
       parsed.fold(
-        _ => println(node.show + "\n" + node.sql),
+        _ => println(node.shows + "\n" + node.sql),
         p => if (p != node) println(p.sql + "\n" + (R.render(node) diff R.render(p)).show))
 
       parsed must beRightDisjOrDiff(node)
@@ -391,7 +391,7 @@ class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatche
         s  <- Gen.choose(1, 5)
         cs <- Gen.listOfN(s, Gen.oneOf("'", "\\", " ", "\n", "\t", "a", "b", "c"))
       } yield StringLiteral(cs.mkString),
-      Gen.const(NullLiteral()),
+      Gen.const(NullLiteral),
       Gen.const(BoolLiteral(true)),
       Gen.const(BoolLiteral(false)))
 
@@ -401,7 +401,7 @@ class SQLParserSpec extends Specification with ScalaCheck with DisjunctionMatche
    exponentially big.
    */
   def smallNonEmptyListOf[A](gen: Gen[A]): Gen[List[A]] = {
-    def log2(x: Int): Int = (Math.log(x)/Math.log(2)).toInt
+    def log2(x: Int): Int = (java.lang.Math.log(x)/java.lang.Math.log(2)).toInt
     for {
       sz <- Gen.size
       n  <- Gen.choose(1, log2(sz))

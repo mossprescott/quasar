@@ -1,15 +1,29 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine
 
-import collection.immutable.Map
-
-import scalaz._
-import Scalaz._
-
-import slamdata.engine.fp._
-
+import slamdata.Predef._
+import slamdata.RenderTree
+import slamdata.fp._
 import SemanticError.{TypeError, MissingField, MissingIndex}
-import NonEmptyList.nel
-import Validation.{success, failure}
+
+import scala.Any
+
+import scalaz._, Scalaz._, NonEmptyList.nel, Validation.{success, failure}
 
 sealed trait Type { self =>
   import Type._
@@ -53,9 +67,9 @@ sealed trait Type { self =>
     case Arr(value) => Some(value.concatenate(TypeOrMonoid))
     case FlexArr(_, _, value) => Some(value)
     case x: Product =>
-      x.flatten.toList.map(_.arrayType).sequenceU.map(_.reduce(Type.lub _))
+      x.flatten.toList.map(_.arrayType).sequenceU.map(_.concatenate(TypeLubMonoid))
     case x: Coproduct =>
-      x.flatten.toList.map(_.arrayType).sequenceU.map(_.reduce(Type.lub _))
+      x.flatten.toList.map(_.arrayType).sequenceU.map(_.concatenate(TypeLubMonoid))
     case _ => None
   }
 
@@ -102,21 +116,8 @@ sealed trait Type { self =>
   }
 
   final def objectField(field: Type): ValidationNel[SemanticError, Type] = {
-    if (Type.lub(field, Str) != Str) failure(nel(TypeError(Str, field), Nil))
+    if (Type.lub(field, Str) != Str) failure(nel(TypeError(Str, field, None), Nil))
     else (field, this) match {
-      case (Str, Const(Data.Obj(map))) =>
-        success(map.values.toList.foldMap(_.dataType)(TypeLubMonoid))
-      case (Const(Data.Str(field)), Const(Data.Obj(map))) =>
-        // TODO: import toSuccess as method on Option (via ToOptionOps)?
-        toSuccess(map.get(field).map(Const(_)))(nel(MissingField(field), Nil))
-
-      case (Str, r @ Obj(_, _)) => success(r.objectType.get)
-      case (Const(Data.Str(field)), Obj(map, uk)) =>
-        map.get(field).fold(
-          uk.fold[ValidationNel[SemanticError, Type]](
-            failure(nel(MissingField(field), Nil)))(
-            success))(
-          success)
       case (_, x : Product) =>
         implicit val and = Type.TypeAndMonoid
         x.flatten.foldMap(_.objectField(field))
@@ -130,31 +131,31 @@ sealed trait Type { self =>
         }
       }
 
-      case _ => failure(nel(TypeError(AnyObject, this), Nil))
+      case (Str, t) =>
+        t.objectType.fold[ValidationNel[SemanticError, Type]](
+          failure(nel(TypeError(AnyObject, this, None), Nil)))(
+          success)
+
+      case (Const(Data.Str(field)), Const(Data.Obj(map))) =>
+        // TODO: import toSuccess as method on Option (via ToOptionOps)?
+        toSuccess(map.get(field).map(Const(_)))(nel(MissingField(field), Nil))
+
+      case (Const(Data.Str(field)), Obj(map, uk)) =>
+        map.get(field).fold(
+          uk.fold[ValidationNel[SemanticError, Type]](
+            failure(nel(MissingField(field), Nil)))(
+            success))(
+          success)
+
+      case _ => failure(nel(TypeError(AnyObject, this, None), Nil))
     }
   }
 
   final def arrayElem(index: Type): ValidationNel[SemanticError, Type] = {
-    if (Type.lub(index, Int) != Int) failure(nel(TypeError(Int, index), Nil))
+    if (Type.lub(index, Int) != Int) failure(nel(TypeError(Int, index, None), Nil))
     else (index, this) match {
       case (Const(Data.Int(index)), Const(Data.Arr(arr))) =>
         arr.lift(index.toInt).map(data => success(Const(data))).getOrElse(failure(nel(MissingIndex(index.toInt), Nil)))
-
-      case (Int, Const(Data.Arr(arr))) => success(arr.map(_.dataType).reduce(_ | _))
-
-      case (Int, FlexArr(_, _, value)) => success(value)
-      case (Const(Data.Int(index)), FlexArr(min, max, value)) =>
-        lazy val succ =
-          success(value)
-        max.fold[ValidationNel[SemanticError, Type]](
-          succ)(
-          max => if (index < max) succ else failure(nel(MissingIndex(index.toInt), Nil)))
-
-      case (Int, a @ Arr(_)) => success(a.arrayType.get)
-      case (Const(Data.Int(index)), a @ Arr(value)) =>
-        if (index < value.length)
-          success(a.value(index.toInt))
-        else failure(nel(MissingIndex(index.toInt), Nil))
 
       case (_, x : Product) =>
         implicit val or = Type.TypeOrMonoid
@@ -164,7 +165,24 @@ sealed trait Type { self =>
         implicit val lub = Type.TypeLubMonoid
         x.flatten.toList.foldMap(_.arrayElem(index))
 
-      case _ => failure(nel(TypeError(AnyArray, this), Nil))
+      case (Int, t) =>
+        t.arrayType.fold[ValidationNel[SemanticError, Type]](
+          failure(nel(TypeError(AnyArray, this, None), Nil)))(
+          success)
+
+      case (Const(Data.Int(index)), FlexArr(min, max, value)) =>
+        lazy val succ =
+          success(value)
+        max.fold[ValidationNel[SemanticError, Type]](
+          succ)(
+          max => if (index < max) succ else failure(nel(MissingIndex(index.toInt), Nil)))
+
+      case (Const(Data.Int(index)), a @ Arr(value)) =>
+        if (index < value.length)
+          success(a.value(index.toInt))
+        else failure(nel(MissingIndex(index.toInt), Nil))
+
+      case _ => failure(nel(TypeError(AnyArray, this, None), Nil))
     }
   }
 }
@@ -200,12 +218,10 @@ trait TypeInstances {
     def append(f1: Type, f2: => Type) = Type.lub(f1, f2)
   }
 
-  implicit val TypeRenderTree = new RenderTree[Type] {
-    override def render(v: Type) = Terminal(v.toString, List("Type"))  // TODO
-  }
+  implicit val TypeRenderTree = RenderTree.fromToString[Type]("Type")
 }
 
-case object Type extends TypeInstances {
+final case object Type extends TypeInstances {
   private def fail[A](expected: Type, actual: Type, message: Option[String]): ValidationNel[TypeError, A] =
     Validation.failure(NonEmptyList(TypeError(expected, actual, message)))
 
@@ -249,10 +265,10 @@ case object Type extends TypeInstances {
   def typecheck(superType: Type, subType: Type):
       ValidationNel[TypeError, Unit] =
     (superType, subType) match {
-      case (superType, subType) if (superType == subType) => succeed(Unit)
+      case (superType, subType) if (superType == subType) => succeed(())
 
-      case (Top, _)    => succeed(Unit)
-      case (_, Bottom) => succeed(Unit)
+      case (Top, _)    => succeed(())
+      case (_, Bottom) => succeed(())
 
       case (superType, Const(subType)) => typecheck(superType, subType.dataType)
 
@@ -288,7 +304,7 @@ case object Type extends TypeInstances {
         } +++
           supUk.fold(
             subUk.fold[ValidationNel[TypeError, Unit]](
-              if ((subMap -- supMap.keySet).isEmpty) succeed(Unit) else fail(superType, subType))(
+              if ((subMap -- supMap.keySet).isEmpty) succeed(()) else fail(superType, subType))(
               κ(fail(superType, subType))))(
             p => subUk.fold[ValidationNel[TypeError, Unit]](
               // if (subMap -- supMap.keySet) is empty, fail(superType, subType)
@@ -381,36 +397,36 @@ case object Type extends TypeInstances {
     loop(v)
   }
 
-  case object Top extends Type
-  case object Bottom extends Type
+  final case object Top extends Type
+  final case object Bottom extends Type
 
-  case class Const(value: Data) extends Type
+  final case class Const(value: Data) extends Type
 
   sealed trait PrimitiveType extends Type
-  case object Null extends PrimitiveType
-  case object Str extends PrimitiveType
-  case object Int extends PrimitiveType
-  case object Dec extends PrimitiveType
-  case object Bool extends PrimitiveType
-  case object Binary extends PrimitiveType
-  case object Timestamp extends PrimitiveType
-  case object Date extends PrimitiveType
-  case object Time extends PrimitiveType
-  case object Interval extends PrimitiveType
-  case object Id extends PrimitiveType
+  final case object Null extends PrimitiveType
+  final case object Str extends PrimitiveType
+  final case object Int extends PrimitiveType
+  final case object Dec extends PrimitiveType
+  final case object Bool extends PrimitiveType
+  final case object Binary extends PrimitiveType
+  final case object Timestamp extends PrimitiveType
+  final case object Date extends PrimitiveType
+  final case object Time extends PrimitiveType
+  final case object Interval extends PrimitiveType
+  final case object Id extends PrimitiveType
 
-  case class Set(value: Type) extends Type
+  final case class Set(value: Type) extends Type
 
-  case class Arr(value: List[Type]) extends Type
-  case class FlexArr(minSize: Int, maxSize: Option[Int], value: Type)
+  final case class Arr(value: List[Type]) extends Type
+  final case class FlexArr(minSize: Int, maxSize: Option[Int], value: Type)
       extends Type
 
   // NB: `unknowns` represents the type of any values where we don’t know the
   //      keys. None means the Obj is fully known.
-  case class Obj(value: Map[String, Type], unknowns: Option[Type])
+  final case class Obj(value: Map[String, Type], unknowns: Option[Type])
       extends Type
 
-  case class Product(left: Type, right: Type) extends Type {
+  final case class Product(left: Type, right: Type) extends Type {
     def flatten: Vector[Type] = {
       def flatten0(v: Type): Vector[Type] = v match {
         case Product(left, right) => flatten0(left) ++ flatten0(right)
@@ -436,7 +452,7 @@ case object Type extends TypeInstances {
     }
   }
 
-  case class Coproduct(left: Type, right: Type) extends Type {
+  final case class Coproduct(left: Type, right: Type) extends Type {
     def flatten: Vector[Type] = {
       def flatten0(v: Type): Vector[Type] = v match {
         case Coproduct(left, right) => flatten0(left) ++ flatten0(right)
@@ -469,7 +485,7 @@ case object Type extends TypeInstances {
   private def forall(expected: Type, actuals: Seq[Type]): ValidationNel[TypeError, Unit] = {
     actuals.headOption match {
       case Some(head) => typecheck(expected, head) +++ forall(expected, actuals.tail)
-      case None => Validation.success(Top)
+      case None => Validation.success(())
     }
   }
 
@@ -483,7 +499,7 @@ case object Type extends TypeInstances {
 
   private def typecheck(combine: (ValidationNel[TypeError, Unit], ValidationNel[TypeError, Unit]) => ValidationNel[TypeError, Unit],
                         check: (Type, Seq[Type]) => ValidationNel[TypeError, Unit]) = (expecteds: Seq[Type], actuals: Seq[Type]) => {
-    expecteds.foldLeft[ValidationNel[TypeError, Unit]](Validation.success(Unit)) {
+    expecteds.foldLeft[ValidationNel[TypeError, Unit]](Validation.success(())) {
       case (acc, expected) => {
         combine(acc, check(expected, actuals))
       }

@@ -1,27 +1,44 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine
 
-import scala.collection.immutable.ListMap
-import scalaz._, Scalaz._
+import slamdata.Predef._
+import slamdata.fp._
+
 import argonaut._, Argonaut._
-import org.threeten.bp._
+import scalaz._, Scalaz._
 
-import slamdata.engine.fp._
-
-trait DataEncodingError extends slamdata.engine.Error
+trait DataEncodingError {
+  def message: String
+}
 object DataEncodingError {
-  case class UnrepresentableDataError(data: Data) extends DataEncodingError {
+  final case class UnrepresentableDataError(data: Data) extends DataEncodingError {
     def message = "not representable: " + data
   }
 
-  case class UnescapedKeyError(json: Json) extends DataEncodingError {
+  final case class UnescapedKeyError(json: Json) extends DataEncodingError {
     def message = "un-escaped key: " + json
   }
 
-  case class UnexpectedValueError(expected: String, json: Json) extends DataEncodingError {
+  final case class UnexpectedValueError(expected: String, json: Json) extends DataEncodingError {
     def message = "expected " + expected + ", found: " + json.pretty(minspace)
   }
 
-  case class ParseError(cause: String) extends DataEncodingError {
+  final case class ParseError(cause: String) extends DataEncodingError {
     def message = cause
   }
 
@@ -56,10 +73,10 @@ object DataCodec {
     def encode(data: Data): DataEncodingError \/ Json = {
       import Data._
       data match {
-        case `Null`   => \/-(jNull)
-        case `True`   => \/-(jTrue)
-        case `False`  => \/-(jFalse)
-        case Int(x)   =>
+        case Null => \/-(jNull)
+        case Bool(true) => \/-(jTrue)
+        case Bool(false) => \/-(jFalse)
+        case Int(x) =>
           if (x.isValidLong) \/-(jNumber(JsonLong(x.longValue)))
           else \/-(jNumber(JsonBigDecimal(new java.math.BigDecimal(x.underlying))))
         case Dec(x)   => \/-(jNumber(JsonBigDecimal(x)))
@@ -125,9 +142,9 @@ object DataCodec {
     def encode(data: Data): DataEncodingError \/ Json = {
       import Data._
       data match {
-        case `Null`   => \/-(jNull)
-        case `True`   => \/-(jTrue)
-        case `False`  => \/-(jFalse)
+        case Null => \/-(jNull)
+        case Bool(true) => \/-(jTrue)
+        case Bool(false) => \/-(jFalse)
         case Int(x)   =>
           if (x.isValidLong) \/-(jNumber(JsonLong(x.longValue)))
           else \/-(jNumber(JsonBigDecimal(new java.math.BigDecimal(x.underlying))))

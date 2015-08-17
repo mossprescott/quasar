@@ -1,11 +1,9 @@
 package slamdata.engine.fs
 
-import scalaz._
-import Scalaz._
+import slamdata.Predef._
 
 import org.specs2.mutable._
-
-import slamdata.engine.{DisjunctionMatchers}
+import org.specs2.scalaz._
 
 class PathSpecs extends Specification with DisjunctionMatchers {
   "Path.apply" should {
@@ -143,32 +141,6 @@ class PathSpecs extends Specification with DisjunctionMatchers {
     }
   }
 
-  "Path.contains" should {
-    "return true when parent contains child dir" in {
-      Path("/foo/bar/").contains(Path("/foo/bar/baz/")) must beTrue
-    }
-
-    "return true when parent contains child file" in {
-      Path("/foo/bar/").contains(Path("/foo/bar/baz")) must beTrue
-    }
-
-    "return true for abs path that contains itself" in {
-      Path("/foo/bar/").contains(Path("/foo/bar/")) must beTrue
-    }
-
-    "return true for rel path when parent contains child dir" in {
-      Path("./foo/bar/").contains(Path("./foo/bar/baz/")) must beTrue
-    }
-
-    "return true for rel path when parent contains child file" in {
-      Path("./foo/bar/").contains(Path("./foo/bar/baz")) must beTrue
-    }
-
-    "return true for rel path that contains itself" in {
-      Path("./foo/bar/").contains(Path("./foo/bar/")) must beTrue
-    }
-  }
-
   "Path.asAbsolute" should {
     "not modify /" in {
       Path("/").asAbsolute must_== Path("/")
@@ -291,93 +263,39 @@ class PathSpecs extends Specification with DisjunctionMatchers {
 
   "Path.rebase" should {
     "match root to root" in {
-      Path("/").rebase(Path("/")) must beRightDisj(Path("./"))
+      Path("/").rebase(Path("/")) must beRightDisjunction(Path("./"))
     }
 
     "match dir to same dir" in {
-      Path("/foo/").rebase(Path("/foo/")) must beRightDisj(Path("./"))
+      Path("/foo/").rebase(Path("/foo/")) must beRightDisjunction(Path("./"))
     }
 
     "match file to its dir" in {
-      Path("/foo/bar").rebase(Path("/foo/")) must beRightDisj(Path("./bar"))
+      Path("/foo/bar").rebase(Path("/foo/")) must beRightDisjunction(Path("./bar"))
     }
 
     "match file to parent's dir" in {
-      Path("/foo/bar/baz").rebase(Path("/foo/")) must beRightDisj(Path("./bar/baz"))
+      Path("/foo/bar/baz").rebase(Path("/foo/")) must beRightDisjunction(Path("./bar/baz"))
     }
 
     "fail with file" in {
-      Path("/foo/bar").rebase(Path("/foo")) must beAnyLeftDisj
-    }
-  }
-
-  "Path.interpret" should {
-    "leave relative path intact with matching ref and working dirs" in  {
-      Path("foo").interpret(Path("/"), Path("/")) must beRightDisj(Path("foo"))
+      Path("/foo/bar").rebase(Path("/foo")) must beLeftDisjunction
     }
 
-    "make simple file relative to ref dir" in  {
-      Path("bar").interpret(Path("/"), Path("/foo/")) must beRightDisj(Path("foo/bar"))
+    "fail with rel file" in {
+      Path("./foo/bar").rebase(Path("./foo")) must beLeftDisjunction
     }
 
-    "make absolute path relative to ref dir" in  {
-      Path("/foo/bar").interpret(Path("/foo/"), Path("/anything/")) must beRightDisj(Path("bar"))
+    "return true for rel path when parent contains child dir" in {
+      Path("./foo/bar/baz/").rebase(Path("./foo/bar/")) must beRightDisjunction(Path("./baz/"))
     }
 
-    "fail with path outside ref dir" in {
-      Path("/other").interpret(Path("/foo/"), Path("/anything/")) must beAnyLeftDisj
+    "return true for rel path when parent contains child file" in {
+      Path("./foo/bar/baz").rebase(Path("./foo/bar/")) must beRightDisjunction(Path("./baz"))
     }
 
-    "fail with relative ref dir" in  {
-      Path("foo").interpret(Path("rel/"), Path("/anything/")) must beAnyLeftDisj
-    }
-
-    "fail with ref path not a dir" in  {
-      Path("foo").interpret(Path("/file"), Path("/anything/")) must beAnyLeftDisj
-    }
-
-    "fail with relative working dir" in  {
-      Path("foo").interpret(Path("/anything/"), Path("rel/")) must beAnyLeftDisj
-    }
-
-    "fail with working path not a dir" in  {
-      Path("foo").interpret(Path("/anything/"), Path("/file")) must beAnyLeftDisj
-    }
-  }
-
-  "FSTable.lookup" should {
-    "find root" in {
-      FSTable(Map(Path("/") -> "foo")).lookup(Path("/")) must beSome(("foo", Path("/"), Path(".")))
-    }
-
-    "find file in root" in {
-      FSTable(Map(Path("/") -> "foo")).lookup(Path("/bar")) must beSome(("foo", Path("/"), Path("./bar")))
-    }
-
-    "handle no mounts" in {
-      FSTable(Map()).lookup(Path("/")) must beNone
-    }
-
-    "handle unmounted path" in {
-      FSTable(Map(Path("foo") -> "foo")).lookup(Path("/bar")) must beNone
-    }
-
-    "find file with two mounts" in {
-      FSTable(Map(Path("foo") -> "foo", Path("bar") -> "bar")).lookup(Path("/foo/buz")) must beSome(("foo", Path("/foo/"), Path("./buz")))
-    }
-
-    "find nested file with two mounts" in {
-      FSTable(Map(Path("foo") -> "foo", Path("bar") -> "bar")).lookup(Path("/bar/buz/quux")) must beSome(("bar", Path("/bar/"), Path("./buz/quux")))
-    }
-  }
-
-  "FSTable.children" should {
-    "find two mounts" in {
-      FSTable(Map(Path("foo") -> "foo", Path("bar/buz") -> "buz")).children(Path("/")) must contain(Path("foo/"), Path("bar/"))
-    }
-
-    "find one of two mounts" in {
-      FSTable(Map(Path("foo") -> "foo", Path("bar/buz") -> "buz")).children(Path("/bar/")) must contain(Path("buz/"))
+    "return true for rel path that contains itself" in {
+      Path("./foo/bar/").rebase(Path("./foo/bar/")) must beRightDisjunction(Path("./"))
     }
   }
 }

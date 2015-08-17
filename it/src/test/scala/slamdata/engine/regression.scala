@@ -1,79 +1,85 @@
 package slamdata.engine
 
-import java.io.File
+import slamdata.Predef._
+import slamdata.fp._
+import slamdata.engine.Backend._
+import slamdata.engine.Errors._
+import slamdata.engine.Evaluator._
+import slamdata.engine.fs._
+import slamdata.engine.sql._
 
+import java.io.File
 import scala.util.matching.Regex
 
-import org.specs2.mutable._
+import argonaut._, Argonaut._
 import org.specs2.execute._
 import org.specs2.matcher._
+import org.specs2.mutable._
 import org.specs2.specification.{Example}
-
-import argonaut._, Argonaut._
-
 import scalaz.{Failure => _, _}, Scalaz._
 import scalaz.stream._
 import scalaz.concurrent._
 
-import slamdata.engine.fp._
-import slamdata.engine.fs._
-import slamdata.engine.sql.{Query}
-
 class RegressionSpec extends BackendTest {
+
   implicit val codec = DataCodec.Precise
-  implicit val ED = EncodeJson[Data](data => codec.encode(data).fold(err => sys.error(err.message), identity))
+  implicit val ED = EncodeJson[Data](codec.encode(_).fold(err => scala.sys.error(err.message), ɩ))
 
   tests { case (backendName, backend) =>
 
-    val fs = backend.dataSource
-
-    val tmpDir = testRootDir(fs) ++ genTempDir(fs).run
+    val tmpDir = testRootDir(backend) ++ genTempDir.run
 
     val TestRoot = new File("it/src/test/resources/tests")
-
-    println("TestRoot = " + TestRoot.getAbsolutePath)
 
     backendName should {
 
       def dataPath(name: String): Path = {
         val NamePattern: Regex = """(.*)\.[^.*]+"""r
-        val path: Path = tmpDir ++ Path(NamePattern.unapplySeq(name).get.head)
-        path
+
+        tmpDir ++ Path(NamePattern.unapplySeq(name).get.head)
       }
 
-      def loadData(testFile: File, name: String): Task[Unit] = {
+      def loadData(testFile: File, name: String): ProcessingTask[Unit] = {
         val path = dataPath(name)
-        for {
-          exists <- fs.exists(path)
-          _      <- if (exists) Task.now(()) else for {
-            is    <- Task.delay { new java.io.FileInputStream(new File(testFile.getParent, name)) }
-            _ = println("loading: " + name)
+        backend.exists(path).leftMap(PPathError(_)).flatMap { exists =>
+          if (exists)
+            ().point[ProcessingTask]
+          else for {
+            is    <- liftE[ProcessingError](Task.delay { new java.io.FileInputStream(new File(testFile.getParent, name)) })
+            _     <- liftE(Task.delay(println("loading: " + name)))
             lines = scalaz.stream.io.linesR(is)
-            data  = lines.flatMap(l => DataCodec.parse(l).fold(err => Process.fail(sys.error(err.message)), j => Process.eval(Task.now(j))))
-            _     <- fs.save(path, data)
+            data  = lines.flatMap(DataCodec.parse(_).fold(
+              err => Process.fail(new RuntimeException("error loading " + name + ": " + err.message)),
+              j => Process.eval(Task.now(j))))
+            _     <- backend.save(path, data)
           } yield ()
-        } yield ()
+        }
       }
 
-      def runQuery(query: String, vars: Map[String, String]): (Vector[PhaseResult], Task[ResultPath]) =
-        (for {
-          t    <- backend.run {
-                    QueryRequest(
-                      query     = Query(query),
-                      out       = Some(tmpDir ++ Path("out")),
-                      basePath  = Path("/") ++ tmpDir,
-                      mountPath = Path("/"),
-                      variables = Variables.fromMap(vars))
-                  }
-          _ = println(query)
-        } yield t)
+      def runQuery(query: String, vars: Map[String, String]):
+          EvaluationTask[(Vector[PhaseResult], ResultPath)] =
+        for {
+          expr <- liftE[EvaluationError](SQLParser.parseInContext(Query(query), tmpDir).fold(e => Task.fail(new RuntimeException(e.message)), Task.now))
+          t <- liftE(genTempFile.map(file =>
+            backend.run {
+              QueryRequest(
+                query     = expr,
+                out       = Some(tmpDir ++ file),
+                variables = Variables.fromMap(vars))
+            }))
+            (log, outT) = t.run
+          out <- outT.fold(e => liftE[EvaluationError](Task.fail(new RuntimeException(e.message))), ɩ)
+            _ <- liftE(Task.delay(println(query)))
+        } yield (log, out)
 
-      def verifyExists(name: String): Task[Result] = fs.exists(dataPath(name)).map(_ must_== true)
+      def verifyExists(name: String): Task[Result] =
+        backend.exists(dataPath(name)).fold(_ must beNull, _ must beTrue)
 
-      def verifyExpected(outPath: Path, exp: ExpectedResult)(implicit E: EncodeJson[Data]): Task[Result] = {
-        val clean: Process[Task, Json] = fs.scan(outPath, None, None).map(E.encode(_)).map(deleteFields(exp.ignoredFields))
+      def verifyExpected(outPath: Path, exp: ExpectedResult)(implicit E: EncodeJson[Data]): ETask[ResultError, Result] = {
+        val clean: Process[ETask[ResultError, ?], Json] =
+          backend.scan(outPath, 0, None).map(x => deleteFields(exp.ignoredFields)(E.encode(x)))
 
-        exp.predicate(exp.rows.toVector, clean)
+        exp.predicate[ETask[ResultError, ?]](exp.rows.toVector, clean)
       }
 
       def optionalMapGet[A, B](m: Option[Map[A, B]], key: A, noneDefault: B, missingDefault: B): B = m match {
@@ -87,13 +93,14 @@ class RegressionSpec extends BackendTest {
                         Task.delay {
                           (test.name + " [" + testFile.getPath + "]") in {
                             def runTest = (for {
-                                _ <- test.data.map(loadData(testFile, _)).getOrElse(Task.now(()))
-                                (log, outPathT) = runQuery(test.query, test.variables)
-                                outPath <- outPathT
-                                // _ = println(test.name + "\n" + log.last + "\n")
-                                _   <- test.data.map(verifyExists(_)).getOrElse(Task.now(success))
-                                rez <- verifyExpected(outPath.path, test.expected)
-                              } yield rez).handle { case err => Failure(err.getMessage) }.run
+                              _ <- test.data.fold(().point[ProcessingTask])(loadData(testFile, _))
+                              out <- runQuery(test.query, test.variables).leftMap(PEvalError(_))
+                              (log, outPath) = out
+                              // _ = println(test.name + "\n" + log.last)
+                              _   <- liftE(test.data.fold(Task.now[Result](success))(verifyExists(_)))
+                              rez <- verifyExpected(outPath.path, test.expected).leftMap(PResultError(_))
+                              _   <- backend.delete(outPath.path).leftMap(PPathError(_))
+                            } yield rez).run.handle { case err => \/-(Failure(err.getMessage)) }.run.fold(e => Failure("path error: " + e.message), ɩ)
                             optionalMapGet(test.backends, backendName, Disposition.Verify, Disposition.Skip) match {
                               case Disposition.Skip    => skipped
                               case Disposition.Verify  => runTest
@@ -109,8 +116,8 @@ class RegressionSpec extends BackendTest {
       ()
     }
 
-    step {
-      deleteTempFiles(fs, tmpDir)
+    val cleanup = step {
+      deleteTempFiles(backend, tmpDir).run
     }
   }
 
@@ -183,9 +190,9 @@ object RegressionTest {
 
 sealed trait Disposition
 object Disposition {
-  case object Skip    extends Disposition
-  case object Pending extends Disposition
-  case object Verify  extends Disposition
+  final case object Skip    extends Disposition
+  final case object Pending extends Disposition
+  final case object Verify  extends Disposition
 
   import DecodeResult.{ok, fail}
 
@@ -199,7 +206,8 @@ object Disposition {
 }
 
 sealed trait Predicate {
-  def apply(expected: Vector[Json], actual: Process[Task, Json]): Task[Result]
+  def apply[F[_]: Catchable: Monad](expected: Vector[Json], actual: Process[F, Json]):
+      F[Result]
 }
 object Predicate extends Specification {
   import process1._
@@ -231,32 +239,32 @@ object Predicate extends Specification {
   }
 
   // Must contain ALL the elements in some order.
-  case object ContainsAtLeast extends Predicate {
-    def apply(expected: Vector[Json], actual: Process[Task, Json]): Task[Result] = {
+  final case object ContainsAtLeast extends Predicate {
+    def apply[F[_]: Catchable: Monad](expected: Vector[Json], actual: Process[F, Json]): F[Result] = {
       (for {
         expected <- actual.pipe(scan(expected.toSet) {
-                      case (expected, e) => expected.filterNot(jsonMatches(_, e))
-                    }).pipe(dropWhile(_.size > 0)).pipe(take(1))
+          case (expected, e) => expected.filterNot(jsonMatches(_, e))
+        }).pipe(dropWhile(_.size > 0)).pipe(take(1))
       } yield (expected aka "unmatched expected values" must be empty) : Result).runLastOr(failure)
     }
   }
   // Must contain ALL and ONLY the elements in some order.
-  case object ContainsExactly extends Predicate {
-    def apply(expected: Vector[Json], actual: Process[Task, Json]): Task[Result] = {
+  final case object ContainsExactly extends Predicate {
+    def apply[F[_]: Catchable: Monad](expected: Vector[Json], actual: Process[F, Json]): F[Result] = {
       (for {
         t <-  actual.pipe(scan((expected.toSet, Set.empty[Json])) {
-                case ((expected, extra), e) =>
-                  if (expected.contains(e)) (expected.filterNot(jsonMatches(_, e)), extra)
-                  else (expected, extra + e)
-              }).pipe(dropWhile(t => t._1.size > 0 && t._2.size == 0)).pipe(take(1))
+          case ((expected, extra), e) =>
+            if (expected.contains(e)) (expected.filterNot(jsonMatches(_, e)), extra)
+            else (expected, extra + e)
+        }).pipe(dropWhile(t => t._1.size > 0 && t._2.size == 0)).pipe(take(1))
 
         (expected, extra) = t
       } yield (extra aka "unexpected values" must be empty) and (expected aka "unmatched expected values" must be empty): Result).runLastOr(failure)
     }
   }
   // Must EXACTLY match the elements, in order.
-  case object EqualsExactly extends Predicate {
-    def apply(expected0: Vector[Json], actual0: Process[Task, Json]): Task[Result] = {
+  final case object EqualsExactly extends Predicate {
+    def apply[F[_]: Catchable: Monad](expected0: Vector[Json], actual0: Process[F, Json]): F[Result] = {
       val actual   = actual0.map(Some(_))
       val expected = Process.emitAll(expected0).map(Some(_))
 
@@ -268,8 +276,8 @@ object Predicate extends Specification {
     }
   }
   // Must START WITH the elements, in order.
-  case object EqualsInitial extends Predicate {
-    def apply(expected0: Vector[Json], actual0: Process[Task, Json]): Task[Result] = {
+  final case object EqualsInitial extends Predicate {
+    def apply[F[_]: Catchable: Monad](expected0: Vector[Json], actual0: Process[F, Json]): F[Result] = {
       val actual   = actual0.map(Some(_))
       val expected = Process.emitAll(expected0).map(Some(_))
 
@@ -282,8 +290,8 @@ object Predicate extends Specification {
     }
   }
   // Must NOT contain ANY of the elements.
-  case object DoesNotContain extends Predicate {
-    def apply(expected0: Vector[Json], actual: Process[Task, Json]): Task[Result] = {
+  final case object DoesNotContain extends Predicate {
+    def apply[F[_]: Catchable: Monad](expected0: Vector[Json], actual: Process[F, Json]): F[Result] = {
       val expected = expected0.toSet
       (for {
         found <-  actual.pipe(scan(expected) {

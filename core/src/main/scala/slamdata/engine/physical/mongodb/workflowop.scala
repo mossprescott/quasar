@@ -1,50 +1,48 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.physical.mongodb
 
-import collection.immutable.ListMap
-
+import slamdata.Predef._
+import slamdata.{RenderTree, RenderedTree, Terminal, NonTerminal}, RenderTree.ops._
+import slamdata.recursionschemes._, Recursive.ops._
+import slamdata.fp._
 import slamdata.engine.fs.Path
-import slamdata.engine.{Error, RenderTree, RenderedTree, Terminal, NonTerminal}
-import slamdata.engine.fp._
 import optimize.pipeline._
+import slamdata.engine.javascript._, Js._
 import WorkflowTask._
-import slamdata.engine.analysis.fixplate._
-import slamdata.engine.javascript._
 
-import scalaz._
-import Scalaz._
-import spire.algebra.Ring
-import spire.syntax.ring._
-import monocle.Macro._
 import monocle.syntax._
+import scalaz._, Scalaz._
+import shapeless.contrib.scalaz.instances._
 
 sealed trait IdHandling
 object IdHandling {
-  case object ExcludeId extends IdHandling
-  case object IncludeId extends IdHandling
-  case object IgnoreId extends IdHandling
+  final case object ExcludeId extends IdHandling
+  final case object IncludeId extends IdHandling
+  final case object IgnoreId extends IdHandling
 
-  implicit val IdHandlingRing = new Ring[IdHandling] {
-    // This is the `merge` function
-    def plus(f1: IdHandling, f2: IdHandling) = (f1, f2) match {
-      case (IncludeId, _)         => IncludeId
-      case (_,         IgnoreId)  => f1
-      case _                      => f2
-    }
-
-    def negate(a: IdHandling) = a match {
-      case IncludeId => ExcludeId
-      case ExcludeId => IncludeId
-      case IgnoreId  => IgnoreId
-    }
-
+  implicit val IdHandlingMonoid = new Monoid[IdHandling] {
     // this is the `coalesce` function
-    def times(f1: IdHandling, f2: IdHandling) = (f1, f2) match {
+    def append(f1: IdHandling, f2: => IdHandling) = (f1, f2) match {
       case (_, IgnoreId) => f1
       case (_, _)        => f2
     }
 
     def zero = IgnoreId
-    def one = IgnoreId
   }
 }
 
@@ -63,21 +61,54 @@ object IdHandling {
   */
 sealed trait WorkflowF[+A]
 object Workflow {
-  import ExprOp.{GroupOp => _, _}
+  import slamdata.engine.physical.mongodb.accumulator._
+  import slamdata.engine.physical.mongodb.expression._
   import IdHandling._
   import MapReduce._
 
-  type Workflow = Term[WorkflowF]
+  type Workflow = Fix[WorkflowF]
   type WorkflowOp = Workflow => Workflow
   type PipelineOp = PipelineF[Unit]
 
   val ExprLabel  = "value"
   val ExprName   = BsonField.Name(ExprLabel)
-  val ExprVar    = ExprOp.DocVar.ROOT(ExprName)
+  val ExprVar    = DocVar.ROOT(ExprName)
 
   val IdLabel  = "_id"
   val IdName   = BsonField.Name(IdLabel)
-  val IdVar    = ExprOp.DocVar.ROOT(IdName)
+  val IdVar    = DocVar.ROOT(IdName)
+
+  sealed trait CardinalExpr[A]
+  final case class MapExpr[A](fn: A) extends CardinalExpr[A]
+  final case class FlatExpr[A](fn: A) extends CardinalExpr[A]
+
+  implicit val TraverseCardinalExpr = new Traverse[CardinalExpr] {
+    def traverseImpl[G[_]: Applicative, A, B](
+      fa: CardinalExpr[A])(f: A => G[B]):
+        G[CardinalExpr[B]] =
+      fa match {
+        case MapExpr(e)  => f(e).map(MapExpr(_))
+        case FlatExpr(e) => f(e).map(FlatExpr(_))
+      }
+  }
+
+  implicit val CardinalExprComonad = new Comonad[CardinalExpr] {
+    def map[A, B](fa: CardinalExpr[A])(f: A => B): CardinalExpr[B] = fa match {
+      case MapExpr(e)  => MapExpr(f(e))
+      case FlatExpr(e) => FlatExpr(f(e))
+    }
+
+    def cobind[A, B](fa: CardinalExpr[A])(f: CardinalExpr[A] => B):
+        CardinalExpr[B] = fa match {
+      case MapExpr(_)  => MapExpr(f(fa))
+      case FlatExpr(_) => FlatExpr(f(fa))
+    }
+
+    def copoint[A](p: CardinalExpr[A]) = p match {
+      case MapExpr(e)  => e
+      case FlatExpr(e) => e
+    }
+  }
 
   implicit val PipelineFTraverse = new Traverse[PipelineF] {
     def traverseImpl[G[_], A, B](fa: PipelineF[A])(f: A => G[B])
@@ -105,8 +136,8 @@ object Workflow {
       case x @ $Read(_)             => G.point(x)
       case $Map(src, fn, scope)     => G.apply(f(src))($Map(_, fn, scope))
       case $FlatMap(src, fn, scope) => G.apply(f(src))($FlatMap(_, fn, scope))
-      case $SimpleMap(src, expr, flatten, scope) =>
-        G.apply(f(src))($SimpleMap(_, expr, flatten, scope))
+      case $SimpleMap(src, exprs, scope) =>
+        G.apply(f(src))($SimpleMap(_, exprs, scope))
       case $Reduce(src, fn, scope)  => G.apply(f(src))($Reduce(_, fn, scope))
       case $FoldLeft(head, tail)    =>
         G.apply2(
@@ -129,10 +160,10 @@ object Workflow {
     }
   }
 
-  def task(op: Workflow): WorkflowTask =
-    (WorkflowTask.finish _).tupled(finalize(op).para(crush))._2
+  def task(fop: Crystallized): WorkflowTask =
+    (WorkflowTask.finish _).tupled(fop.op.para(crush))._2
 
-  def finish(op: Workflow): Workflow = deleteUnusedFields(op, None)
+  val finish: Workflow => Workflow = reorderOps _  >>> deleteUnusedFields _
 
   def coalesce(op: Workflow): Workflow =
     op.unFix match {
@@ -145,7 +176,7 @@ object Workflow {
       }
       case p @ $Project(src, shape, id) => src.unFix match {
         case $Project(src0, shape0, id0) =>
-          $project(inlineProject(p, List(shape0)), id0 * id)(src0)
+          $project(inlineProject(p, List(shape0)), id0 |+| id)(src0)
         // Would like to inline a $project into a preceding $simpleMap, but
         // This is not safe, because sometimes a $project is inserted after
         // $simpleMap specifically to pull fields out of `value`, and those
@@ -162,7 +193,7 @@ object Workflow {
         //         flatten, scope)))
         case $Group(src, grouped, by) if id != ExcludeId =>
           inlineProjectGroup(shape, grouped).map($group(_, by)(src)).getOrElse(op)
-        case $Unwind(Term($Group(src, grouped, by)), unwound)
+        case $Unwind(Fix($Group(src, grouped, by)), unwound)
             if id != ExcludeId =>
           inlineProjectUnwindGroup(shape, unwound, grouped).map { case (unwound, grouped) =>
             chain(src,
@@ -173,7 +204,7 @@ object Workflow {
       }
       case $Limit(src, count) => src.unFix match {
         case $Limit(src0, count0) =>
-          chain(src0, $limit(Math.min(count0, count)))
+          chain(src0, $limit(count0 min count))
         case $Skip(src0, count0) =>
           chain(src0, $limit(count0 + count), $skip(count0))
         case _ => op
@@ -182,10 +213,10 @@ object Workflow {
         case $Skip(src0, count0) => $skip(count0 + count)(src0)
         case _                   => op
       }
-      case $Group(src, grouped, -\/(Literal(bson))) if bson != Bson.Null =>
-        coalesce($group(grouped, -\/(Literal(Bson.Null)))(src))
+      case $Group(src, grouped, -\/($literal(bson))) if bson != Bson.Null =>
+        coalesce($group(grouped, -\/($literal(Bson.Null)))(src))
       case op0 @ $Group(_, _, _) =>
-        inlineGroupProjects(op0).map(tup => Term(($Group[Workflow](_, _, _)).tupled(tup))).getOrElse(op)
+        inlineGroupProjects(op0).map(tup => Fix(($Group[Workflow](_, _, _)).tupled(tup))).getOrElse(op)
       case $GeoNear(src, _, _, _, _, _, _, _, _, _) => src.unFix match {
         // FIXME: merge the params
         case $GeoNear(_, _, _, _, _, _, _, _, _, _) => op
@@ -213,9 +244,9 @@ object Workflow {
             $flatMap($FlatMap.kleisliCompose(fn, fn0), _)(src0))
         case _                   => op
       }
-      case sm @ $SimpleMap(src, _, _, _) => src.unFix match {
-        case sm0 @ $SimpleMap(_, _, _, _) => Term(sm0 >>> sm)
-        case _                            => op
+      case sm @ $SimpleMap(src, _, _) => src.unFix match {
+        case sm0 @ $SimpleMap(_, _, _) => Fix(sm0 >>> sm)
+        case _                         => op
       }
       case $FoldLeft(head, tail) => head.unFix match {
         case $FoldLeft(head0, tail0) =>
@@ -228,297 +259,6 @@ object Workflow {
       }
       case _ => op
     }
-
-  def merge(left: Workflow, right: Workflow):
-      State[NameGen, ((DocVar, DocVar), Workflow)] = {
-    def delegate =
-      merge(right, left).map { case ((r, l), merged) => ((l, r), merged) }
-
-    if (left == right)
-      state((DocVar.ROOT(), DocVar.ROOT()) -> left)
-    else
-      (left.unFix, right.unFix) match {
-        case ($Pure(lbson), $Pure(rbson)) =>
-          for {
-            lName <- freshName
-            rName <- freshName
-          } yield ((ExprOp.DocField(lName), ExprOp.DocField(rName)) ->
-              $pure(Bson.Doc(ListMap(
-                lName.asText -> lbson,
-                rName.asText -> rbson))))
-        case ($Pure(bson), _) =>
-          for {
-            lName <- freshName
-            rName <- freshName
-          } yield ((ExprOp.DocField(lName), ExprOp.DocField(rName)) ->
-              chain(
-                right,
-                $project(
-                  Reshape(ListMap(
-                    lName -> -\/(ExprOp.Literal(bson)),
-                    rName -> -\/(DocVar.ROOT()))),
-                  IncludeId)))
-        case (_, $Pure(_)) => delegate
-
-        case (l @ $Group(lsrc, _, b1), r @ $Group(rsrc, _, b2))
-            if (b1 == b2) =>
-          for {
-            lName <- freshName
-            rName <- freshName
-            t <- merge(lsrc, rsrc)
-            ((lb, rb), src) = t
-          } yield {
-            val ($Group(_, Grouped(g1_), _), lb0) = rewrite(l, lb)
-            val ($Group(_, Grouped(g2_), _), rb0) = rewrite(r, rb)
-
-            Reshape.mergeMaps(g1_, g2_).fold({
-              // Rewrite:
-              // - each grouped value is given a new temp name in the merged GroupOp.
-              // - a ProjectOp is added after grouping to rearrange the values
-              //   under lEft and rIght.
-              // This is needed because GroupOp cannot create nested structure, and
-              // we need the value from each original op to be located under a single
-              // name (lEft/rIght).
-              val oldNames: List[BsonField.Leaf] = g1_.keys.toList ++ g2_.keys.toList
-              val ops = g1_.values.toList ++ g2_.values.toList
-              val tempNames = BsonField.genUniqNames(ops.length, Nil): List[BsonField.Leaf]
-
-              // New grouped values:
-              val g = ListMap((tempNames zip ops): _*)
-
-              // Project from flat temps to lEft/rIght:
-              val (ot1, ot2) = (oldNames zip tempNames).splitAt(g1_.length)
-              val t = ListMap(lName -> ot1, rName -> ot2)
-              val s: ListMap[BsonField.Name, ExprOp \/ Reshape] =
-                t ∘ (ot =>
-                  \/-(Reshape(
-                    ot.map(_.bimap(_.toName, tmp => -\/(ExprOp.DocField(tmp)))).toListMap))
-                )
-
-              ((ExprOp.DocField(lName), ExprOp.DocField(rName)) ->
-                chain(src,
-                  $group(Grouped(g), b1),
-                  $project(Reshape(s), IgnoreId)))
-            })(
-              g => ((lb0, rb0) -> chain(src, $group(Grouped(g), b1))))
-          }
-
-        case (l @ $Group(_, _, _), r: PipelineF[_]) =>
-          merge(left, r.src).flatMap { case ((lb, rb), src) =>
-            for {
-              lName <- freshName
-              rName <- freshName
-              (r0, rb0) = rewrite(r, DocField(rName))
-            } yield {
-              ((DocField(lName), rb0) ->
-                r0.reparentW(chain(src,
-                  $project(Reshape(ListMap(
-                    lName -> -\/(lb),
-                    rName -> -\/(rb))),
-                    IgnoreId))))
-            }
-          }
-        case (_: PipelineF[_], $Group(_, _, _)) => delegate
-
-        case (l @ $GeoNear(_, _, _, _, _, _, _, _, _, _), r: PipelineF[_]) =>
-          merge(left, r.src).map { case ((lb, rb), src) =>
-            val (left0, lb0) = rewrite(l, lb)
-            val (right0, rb0) = rewrite(r, rb)
-            ((lb0, rb), Term(right0.reparent(src)))
-          }
-        case (_, _: $GeoNear[_]) => delegate
-
-        case ($Project(lsrc, lshape, id), _) if lsrc == right =>
-        for {
-          lName <- freshName
-          rName <- freshName
-        } yield ((ExprOp.DocField(lName), ExprOp.DocField(rName)) ->
-            chain(lsrc,
-              $project(
-                Reshape(ListMap(
-                  lName -> \/- (lshape),
-                  rName -> -\/ (ExprOp.DocVar.ROOT()))),
-                id + IncludeId)))
-        case (_, $Project(rsrc, _, _)) if left == rsrc => delegate
-
-        case (l @ $Unwind(lsrc, lfield), r @ $Unwind(rsrc, rfield)) =>
-          merge(lsrc, rsrc).map { case ((lb, rb), src) =>
-            val (left0, lb0) = rewrite(l, lb)
-            val (right0, rb0) = rewrite(r, rb)
-            if (left0.field == right0.field)
-              ((lb0, rb0) -> chain(src,
-                $unwind(left0.field)))
-            else
-              ((lb0, rb0) -> chain(src,
-                $unwind(left0.field),
-                $unwind(right0.field)))
-          }
-
-        case ($SimpleMap(lsrc, lexpr, Nil, lscope), $SimpleMap(rsrc, rexpr, Nil, rscope)) =>
-          for {
-            lName <- freshName
-            rName <- freshName
-
-            t <- merge(lsrc, rsrc)
-            ((lb, rb), src) = t
-          } yield
-            ((ExprOp.DocField(lName), ExprOp.DocField(rName)) ->
-              chain(src,
-                $simpleMap(JsMacro(value =>
-                  JsCore.Obj(ListMap(
-                    lName.asText -> lexpr(lb.toJs(value)),
-                    rName.asText -> rexpr(rb.toJs(value)))).fix),
-                  Nil,
-                  Reshape.mergeMaps(lscope, rscope).fold(
-                    sys.error(s"cannot merge incompatible scopes ${lscope} with ${rscope}"))(
-                    ɩ))))
-
-        case ($SimpleMap(lsrc, lexpr, lflatten, lscope), _) =>
-          for {
-            lName <- freshName
-            rName <- freshName
-
-            t <- merge(lsrc, right)
-            ((lb, rb), src) = t
-          } yield
-            ((ExprOp.DocField(lName), ExprOp.DocField(rName)) ->
-              chain(src,
-                $simpleMap(
-                  JsMacro(value =>
-                    JsCore.Obj(ListMap(
-                      lName.asText -> lexpr(lb.toJs(value)),
-                      rName.asText -> rb.toJs(value))).fix),
-                  lflatten.map(m => JsMacro(value => m(lb.toJs(value)))),
-                  lscope)))
-        case (_, $SimpleMap(_, _, _, _)) => delegate
-
-        case (l @ $Project(lsrc, _, lx), r @ $Project(rsrc, _, rx)) =>
-          merge(lsrc, rsrc).flatMap { case ((lb, rb), src) =>
-            val (left0, lb0) = rewrite(l, lb)
-            val (right0, rb0) = rewrite(r, rb)
-            Reshape.merge(left0.shape, right0.shape).fold(
-              for {
-                lName <- freshName
-                rName <- freshName
-              } yield
-                ((ExprOp.DocField(lName) \\ lb0,
-                  ExprOp.DocField(rName) \\ rb0) ->
-                  chain(src,
-                    $project(Reshape(ListMap(
-                      lName -> \/-(left0.shape),
-                      rName -> \/-(right0.shape))),
-                      lx + rx)))
-            )(
-              merged =>
-                state((lb0, rb0) -> chain(src, $project(merged, lx + rx))))
-          }
-
-        case (l @ $Project(lsrc, _, id), _: PipelineF[_]) =>
-          for {
-            lName <- freshName
-            rName <- freshName
-
-            t <- merge(lsrc, right)
-            ((lb, rb), src) = t
-          } yield {
-            val (left0, lb0) = rewrite(l, lb)
-
-            ((ExprOp.DocField(lName) \\ lb0, ExprOp.DocField(rName) \\ rb) ->
-              chain(src,
-                $project(
-                  Reshape(ListMap(
-                    lName -> \/- (left0.shape),
-                    rName -> -\/ (DocVar.ROOT()))),
-                  id + IncludeId)))
-          }
-        case (_: PipelineF[_], $Project(_, _, _)) => delegate
-
-        case (l @ $Redact(lsrc, _), r @ $Redact(rsrc, _)) =>
-          merge(lsrc, rsrc).map { case ((lb, rb), src) =>
-            val (left0, lb0) = rewrite(l, lb)
-            val (right0, rb0) = rewrite(r, rb)
-            ((lb0, rb0) -> chain(src,
-              $redact(left0.value),
-              $redact(right0.value)))
-          }
-
-        case ($Unwind(lsrc, lfield), _) =>
-          merge(lsrc, right).flatMap { case ((lb, rb), src) =>
-            if (lb == rb) // NB: means we need to duplicate the field so we don’t trample the one on the other side
-              for {
-                lName <- freshName
-                rName <- freshName
-              } yield ((DocField(lName), DocField(rName)) ->
-                chain(src,
-                  $project(Reshape(ListMap(
-                    lName -> -\/(lb),
-                    rName -> -\/(rb))),
-                    IgnoreId),
-                  $unwind(DocField(lName) \\ lfield)))
-            else
-              state(((lb, rb) -> chain(src, $unwind(lb \\ lfield))))
-          }
-        case (_, $Unwind(_, _)) => delegate
-
-        case (l @ $Map(_, _, _), r @ $Project(rsrc, shape, _)) =>
-          merge(left, rsrc).flatMap { case ((lb, rb), src) =>
-            val (left0, lb0) = rewrite(l, lb)
-            val (right0, rb0) = rewrite(r, rb)
-            for {
-              lName <- freshName
-              rName <- freshName
-            } yield ((ExprOp.DocField(lName) \\ lb0, ExprOp.DocField(rName) \\ rb) ->
-              chain(src,
-                $project(
-                  Reshape(ListMap(
-                    lName -> -\/(DocVar.ROOT()),
-                    rName -> \/-(shape))),
-                  IncludeId)))
-          }
-        case ($Project(_, _, _), $Map(_, _, _)) => delegate
-
-        case (l @ $Project(lsrc, shape, id), r: SourceOp) =>
-          merge(lsrc, right).flatMap { case ((lb, rb), src) =>
-            val (left0, _) = rewrite(l, lb)
-            for {
-              lName <- freshName
-              rName <- freshName
-            } yield ((ExprOp.DocField(lName), ExprOp.DocField(rName)) ->
-                chain(src,
-                  $project(Reshape(ListMap(
-                    lName -> \/- (left0.shape),
-                    rName -> -\/ (rb))),
-                    id + IncludeId)))
-          }
-        case (_: SourceOp, $Project(_, _, _)) => delegate
-
-        case (l: ShapePreservingF[_], r: WorkflowF[_]) =>
-          merge(l.src, right).map { case ((lb, rb), src) =>
-            val (left0, lb0) = rewrite(l, lb)
-            ((lb0, rb) -> Term(l.reparent(src)))
-          }
-        case (_: WorkflowF[_], _: ShapePreservingF[_]) => delegate
-
-        case (l: WorkflowF[_], r: PipelineF[_]) =>
-          sys.error(s"cannot merge ${l.getClass} with ${r.getClass}")
-        case (_: PipelineF[_], _: WorkflowF[_]) => delegate
-
-        case _ =>
-          for {
-            lName <- freshName
-            rName <- freshName
-          } yield ((ExprOp.DocField(lName), ExprOp.DocField(rName)) ->
-            $foldLeft(
-              chain(left,
-                $project(
-                  Reshape(ListMap(lName -> -\/(DocVar.ROOT()))),
-                  IncludeId)),
-              chain(right,
-                $project(
-                  Reshape(ListMap(rName -> -\/(DocVar.ROOT()))),
-                  IncludeId))))
-      }
-  }
 
   def pipeline[A <: PipelineF[Workflow]](op: A):
       Option[(DocVar, WorkflowTask, List[PipelineOp])] =
@@ -550,7 +290,7 @@ object Workflow {
     Returns both the final WorkflowTask as well as a DocVar indicating the base
     of the collection.
     */
-  private val crush: WorkflowF[(Term[WorkflowF], (DocVar, WorkflowTask))] => (DocVar, WorkflowTask) = {
+  private val crush: WorkflowF[(Fix[WorkflowF], (DocVar, WorkflowTask))] => (DocVar, WorkflowTask) = {
       case $Pure(value) => (DocVar.ROOT(), PureTask(value))
       case $Read(coll)  => (DocVar.ROOT(), ReadTask(coll))
       case op @ $Match((src, rez), selector) =>
@@ -575,7 +315,7 @@ object Workflow {
           case Some((base, up, mine)) => (base, PipelineTask(up, mine))
           case None                   => nonPipeline
         }
-      case p: PipelineF[(Term[WorkflowF], (DocVar, WorkflowTask))] =>
+      case p: PipelineF[(Fix[WorkflowF], (DocVar, WorkflowTask))] =>
         alwaysPipePipe(p.reparent(p.src._1)) match {
           case (base, up, pipe) => (base, PipelineTask(up, pipe))
         }
@@ -625,17 +365,19 @@ object Workflow {
                   mr applyLens MapReduce._out set
                     Some(MapReduce.WithAction(
                       MapReduce.Action.Reduce,
+                      db = None,
+                      sharded = None,
                       nonAtomic = Some(true))))
               // NB: `finalize` should ensure that the final op is always a
               //     $Reduce.
-              case src => sys.error("not a mapReduce: " + src)
+              case src => scala.sys.error("not a mapReduce: " + src)
             })))
     }
 
   val collectShapes: WorkflowF[(Workflow, (List[Reshape], Workflow))] => (List[Reshape], Workflow) = {
     case $Project(src, shape, _) =>
       ((x: List[Reshape]) => shape :: x).first(src._2)
-    case x                       => (Nil, Term(x.map(_._1)))
+    case x                       => (Nil, Fix(x.map(_._1)))
   }
 
   // helper for rewriteRefs
@@ -672,9 +414,9 @@ object Workflow {
       case $Project(src, shape, xId) =>
         $Project(src, shape.rewriteRefs(applyVar0), xId)
       case $Group(src, grouped, by)  =>
-        $Group(src, grouped.rewriteRefs(applyVar0), by.bimap(_.rewriteRefs(applyVar0), _.rewriteRefs(applyVar0)))
+        $Group(src, grouped.rewriteRefs(applyVar0), by.bimap(rewriteExprRefs(_)(applyVar0), _.rewriteRefs(applyVar0)))
       case $Match(src, s)            => $Match(src, applySelector(s))
-      case $Redact(src, e)           => $Redact(src, e.rewriteRefs(applyVar0))
+      case $Redact(src, e)           => $Redact(src, rewriteExprRefs(e)(applyVar0))
       case $Unwind(src, f)           => $Unwind(src, applyVar(f))
       case $Sort(src, l)             => $Sort(src, applyNel(l))
       case g: $GeoNear[_]            =>
@@ -688,29 +430,31 @@ object Workflow {
   final def refs[A <: WorkflowF[_]](op: A): List[DocVar] = {
     // FIXME: Sorry world
     val vf = new scala.collection.mutable.ListBuffer[DocVar]
-    rewriteRefs(op, { case v => vf += v; v })
+    ignore(rewriteRefs(op, { case v => ignore(vf += v); v }))
     vf.toList
   }
 
-  def rewrite[A <: WorkflowF[_]](op: A, base: ExprOp.DocVar):
-      (A, ExprOp.DocVar) =
+  def rewrite[A <: WorkflowF[_]](op: A, base: DocVar): (A, DocVar) =
     (rewriteRefs(op, prefixBase(base)) -> (op match {
-      case $Group(_, _, _)   => ExprOp.DocVar.ROOT()
-      case $Project(_, _, _) => ExprOp.DocVar.ROOT()
-      case _                  => base
+      case $Group(_, _, _)   => DocVar.ROOT()
+      case $Project(_, _, _) => DocVar.ROOT()
+      case _                 => base
     }))
 
   def simpleShape(op: Workflow): Option[List[BsonField.Leaf]] = op.unFix match {
     case $Pure(Bson.Doc(value))             => Some(value.keys.toList.map(BsonField.Name))
-    case $Project(_, Reshape(value), _) => Some(value.keys.toList)
-    case $SimpleMap(_, js, _, _) =>
-      js(JsCore.Ident("_").fix).unFix match {
-        case JsCore.Obj(value) => Some(value.keys.toList.map(BsonField.Name))
-        case _ => None
-      }
-    case $Group(_, Grouped(value), _) => Some(value.keys.toList)
-    case $Unwind(src, _) => simpleShape(src)
-    case sp: ShapePreservingF[_] => simpleShape(sp.src)
+    case $Project(_, Reshape(value), _)     => Some(value.keys.toList)
+    case sm @ $SimpleMap(_, _, _) =>
+      def loop(expr: Fix[JsCore]): Option[List[String]] =
+        expr.simplify.unFix match {
+          case JsCore.Obj(value)      => Some(value.keys.toList)
+          case JsCore.Let(_, _, body) => loop(body)
+          case _ => None
+        }
+      loop(sm.simpleExpr.expr).map(_.map(BsonField.Name))
+    case $Group(_, Grouped(value), _)       => Some(value.keys.toList)
+    case $Unwind(src, _)                    => simpleShape(src)
+    case sp: ShapePreservingF[_]            => simpleShape(sp.src)
     case _ => None
   }
 
@@ -725,7 +469,7 @@ object Workflow {
       Reparenting that handles coalescing (but is more restrictive as a result).
       */
     def reparentW[B](newSrc: Workflow): Workflow =
-      coalesce(Term(reparent(newSrc)))
+      coalesce(Fix(reparent(newSrc)))
   }
 
   /**
@@ -754,6 +498,9 @@ object Workflow {
   def chain(src: Workflow, op1: WorkflowOp, ops: (WorkflowOp)*): Workflow =
     ops.foldLeft(op1(src))((s, o) => o(s))
 
+  /** A type for a `Workflow` which has had `crystallize` applied to it. */
+  final case class Crystallized(op: Workflow)
+
   /**
     Performs some irreversible conversions, meant to be used once, after the
     entire workflow has been generated.
@@ -766,65 +513,75 @@ object Workflow {
   // none:             $Sort
   // NB: We don’t convert a $Project after a map/reduce op because it could
   //     affect the final shape unnecessarily.
-  private def finalize0(op: Workflow): Workflow = op.unFix match {
-    case mr: MapReduceF[Workflow] => mr.src.unFix match {
-      case $Project(src, shape, _)  =>
-        shape.toJs.fold(
-          κ(op.descend(finalize(_))),
-          x => finalize(mr.reparentW($simpleMap(x, Nil, ListMap())(src))))
-      case uw @ $Unwind(_, _)          => finalize(mr.reparentW(Term(uw.flatmapop)))
-      case sm @ $SimpleMap(_, _, _, _) => finalize(mr.reparentW(Term(sm.raw)))
-      case _                           => op.descend(finalize(_))
+  def crystallize(op: Workflow): Crystallized = {
+    def unwindSrc(uw: $Unwind[Fix[WorkflowF]]): WorkflowF[Fix[WorkflowF]] = uw.src.unFix match {
+      case uw1 @ $Unwind(_, _) => unwindSrc(uw1)
+      case src => src
     }
-    case op @ $FoldLeft(head, tail) =>
-      $foldLeft(
-        finalize(chain(
-          head,
-          $project(Reshape(ListMap(
-            ExprName -> -\/(ExprOp.DocVar.ROOT()))),
-            IncludeId))),
-        finalize(tail.head.unFix match {
-          case $Reduce(_, _, _) => tail.head
-          case _ => chain(tail.head, $reduce($Reduce.reduceFoldLeft, ListMap()))
-        }),
-        tail.tail.map(x => finalize(x.unFix match {
-          case $Reduce(_, _, _) => x
-          case _ => chain(x, $reduce($Reduce.reduceFoldLeft, ListMap()))
-        })):_*)
-    case _ => op.descend(finalize(_))
-  }
 
-  def finalize(op: Workflow): Workflow = {
-    val finalized = finalize0(finish(op))
+    def crystallize0(op: Workflow): Workflow = op.unFix match {
+      case mr: MapReduceF[Workflow] => mr.src.unFix match {
+        case $Project(src, shape, _)  =>
+          shape.toJs.fold(
+            κ(op.descend(crystallize0(_))),
+            x => {
+              val base = JsCore.Ident("__rez")
+              crystallize0(mr.reparentW($simpleMap(NonEmptyList(MapExpr(JsFn(base, x(base.fix)))), ListMap())(src)))
+            })
+        case uw @ $Unwind(_, _) if !unwindSrc(uw).isInstanceOf[PipelineF[_]]
+                                      => crystallize0(mr.reparentW(Fix(uw.flatmapop)))
+        case sm @ $SimpleMap(_, _, _) => crystallize0(mr.reparentW(Fix(sm.raw)))
+        case _                        => op.descend(crystallize0(_))
+      }
+      case op @ $FoldLeft(head, tail) =>
+        $foldLeft(
+          crystallize0(chain(
+            head,
+            $project(Reshape(ListMap(
+              ExprName -> -\/($$ROOT))),
+              IncludeId))),
+          crystallize0(tail.head.unFix match {
+            case $Reduce(_, _, _) => tail.head
+            case _ => chain(tail.head, $reduce($Reduce.reduceFoldLeft, ListMap()))
+          }),
+          tail.tail.map(x => crystallize0(x.unFix match {
+            case $Reduce(_, _, _) => x
+            case _ => chain(x, $reduce($Reduce.reduceFoldLeft, ListMap()))
+          })):_*)
+
+      case _ => op.descend(crystallize0)
+    }
+
+    val crystallized = crystallize0(finish(op))
 
     def fixShape(wf: Workflow) =
       Workflow.simpleShape(wf).fold(
-        finalized)(
-        n => $project(Reshape(n.map(_.toName -> -\/(Include)).toListMap), IgnoreId)(finalized))
+        crystallized)(
+        n => $project(Reshape(n.map(_.toName -> -\/($include())).toListMap), IgnoreId)(crystallized))
 
     def promoteKnownShape(wf: Workflow): Workflow = wf.unFix match {
-      case $SimpleMap(_, _, _, _)  => fixShape(wf)
+      case $SimpleMap(_, _, _)  => fixShape(wf)
       case sp: ShapePreservingF[_] => promoteKnownShape(sp.src)
-      case _                       => finalized
+      case _                       => crystallized
     }
 
-    promoteKnownShape(finalized)
+    Crystallized(promoteKnownShape(crystallized))
   }
 
-  case class $Pure(value: Bson) extends SourceOp
-  def $pure(value: Bson) = coalesce(Term[WorkflowF]($Pure(value)))
+  final case class $Pure(value: Bson) extends SourceOp
+  def $pure(value: Bson) = coalesce(Fix[WorkflowF]($Pure(value)))
 
-  case class $Read(coll: Collection) extends SourceOp
-  def $read(coll: Collection) = coalesce(Term[WorkflowF]($Read(coll)))
+  final case class $Read(coll: Collection) extends SourceOp
+  def $read(coll: Collection) = coalesce(Fix[WorkflowF]($Read(coll)))
 
-  case class $Match[A](src: A, selector: Selector)
+  final case class $Match[A](src: A, selector: Selector)
       extends ShapePreservingF[A]("$match") {
     def reparent[B](newSrc: B) = copy(src = newSrc)
     def rhs = selector.bson
   }
   object $Match {
     def make(selector: Selector)(src: Workflow): Workflow =
-      coalesce(Term($Match(src, selector)))
+      coalesce(Fix($Match(src, selector)))
   }
   val $match = $Match.make _
 
@@ -856,7 +613,7 @@ object Workflow {
     }
   }
 
-  case class $Project[A](src: A, shape: Reshape, idExclusion: IdHandling)
+  final case class $Project[A](src: A, shape: Reshape, idExclusion: IdHandling)
       extends PipelineF[A]("$project") {
     def reparent[B](newSrc: B): $Project[B] = copy(src = newSrc)
     def rhs = idExclusion match {
@@ -866,27 +623,27 @@ object Workflow {
     }
     def empty: $Project[A] = $Project.EmptyDoc(src)
 
-    def set(field: BsonField, value: ExprOp \/ Reshape): $Project[A] =
+    def set(field: BsonField, value: Reshape.Shape): $Project[A] =
       $Project(src,
         shape.set(field, value),
         if (field == IdName) IncludeId else idExclusion)
 
-    def get(ref: DocVar): Option[ExprOp \/ Reshape] = ref match {
+    def get(ref: DocVar): Option[Reshape.Shape] = ref match {
       case DocVar(_, Some(field)) => shape.get(field)
       case _                      => Some(\/-(shape))
     }
 
-    def getAll: List[(BsonField, ExprOp)] = {
+    def getAll: List[(BsonField, Expression)] = {
       val all = Reshape.getAll(shape)
       idExclusion match {
         case IncludeId => all.collectFirst {
           case (IdName, _) => all
-        }.getOrElse((IdName, Include) :: all)
+        }.getOrElse((IdName, $include()) :: all)
         case _         => all
       }
     }
 
-    def setAll(fvs: Iterable[(BsonField, ExprOp \/ Reshape)]): $Project[A] =
+    def setAll(fvs: Iterable[(BsonField, Reshape.Shape)]): $Project[A] =
       $Project(
         src,
         Reshape.setAll(shape, fvs),
@@ -911,8 +668,8 @@ object Workflow {
             p.shape.value.transform {
               case (k, v) =>
                 v.fold(
-                  _ => -\/  (ExprOp.DocVar.ROOT(nest(k))),
-                  r =>  \/- (loop(Some(nest(k)), $Project(p.src, r, p.idExclusion)).shape))
+                  _ => -\/ ($var(DocVar.ROOT(nest(k)))),
+                  r =>  \/-(loop(Some(nest(k)), $Project(p.src, r, p.idExclusion)).shape))
             }),
           p.idExclusion)
       }
@@ -922,28 +679,28 @@ object Workflow {
   }
   object $Project {
     def make(shape: Reshape, id: IdHandling)(src: Workflow): Workflow =
-      coalesce(Term($Project(src, shape, id)))
+      coalesce(Fix($Project(src, shape, id)))
 
     def EmptyDoc[A](src: A) = $Project(src, Reshape.EmptyDoc, ExcludeId)
   }
   val $project = $Project.make _
 
-  case class $Redact[A](src: A, value: ExprOp)
+  final case class $Redact[A](src: A, value: Expression)
       extends PipelineF[A]("$redact") {
     def reparent[B](newSrc: B) = copy(src = newSrc)
-    def rhs = value.bson
+    def rhs = value.cata(bsonƒ)
   }
   object $Redact {
-    def make(value: ExprOp)(src: Workflow): Workflow =
-      coalesce(Term($Redact(src, value)))
+    def make(value: Expression)(src: Workflow): Workflow =
+      coalesce(Fix($Redact(src, value)))
 
-    val DESCEND = ExprOp.DocVar(ExprOp.DocVar.Name("DESCEND"),  None)
-    val PRUNE   = ExprOp.DocVar(ExprOp.DocVar.Name("PRUNE"),    None)
-    val KEEP    = ExprOp.DocVar(ExprOp.DocVar.Name("KEEP"),     None)
+    val DESCEND = DocVar(DocVar.Name("DESCEND"),  None)
+    val PRUNE   = DocVar(DocVar.Name("PRUNE"),    None)
+    val KEEP    = DocVar(DocVar.Name("KEEP"),     None)
   }
   val $redact = $Redact.make _
 
-  case class $Limit[A](src: A, count: Long)
+  final case class $Limit[A](src: A, count: Long)
       extends ShapePreservingF[A]("$limit") {
     // TODO: If the preceding is a $Match, and it or its source isn’t
     //       pipelineable, then return a FindQuery combining the match and this
@@ -953,11 +710,11 @@ object Workflow {
   }
   object $Limit {
     def make(count: Long)(src: Workflow): Workflow =
-      coalesce(Term($Limit(src, count)))
+      coalesce(Fix($Limit(src, count)))
   }
   val $limit = $Limit.make _
 
-  case class $Skip[A](src: A, count: Long)
+  final case class $Skip[A](src: A, count: Long)
       extends ShapePreservingF[A]("$skip") {
     // TODO: If the preceding is a $Match (or a limit preceded by a $Match),
     //       and it or its source isn’t pipelineable, then return a FindQuery
@@ -967,52 +724,52 @@ object Workflow {
   }
   object $Skip {
     def make(count: Long)(src: Workflow): Workflow =
-      coalesce(Term($Skip(src, count)))
+      coalesce(Fix($Skip(src, count)))
   }
   val $skip = $Skip.make _
 
-  case class $Unwind[A](src: A, field: ExprOp.DocVar)
+  final case class $Unwind[A](src: A, field: DocVar)
       extends PipelineF[A]("$unwind") {
-    lazy val flatmapop = $SimpleMap(src, JsMacro(identity), List(JsMacro(field.toJs(_))), ListMap())
+    lazy val flatmapop = $SimpleMap(src, NonEmptyList(FlatExpr(field.toJs)), ListMap())
     def reparent[B](newSrc: B) = copy(src = newSrc)
     def rhs = field.bson
   }
   object $Unwind {
-    def make(field: ExprOp.DocVar)(src: Workflow): Workflow =
-      coalesce(Term($Unwind(src, field)))
+    def make(field: DocVar)(src: Workflow): Workflow =
+      coalesce(Fix($Unwind(src, field)))
   }
   val $unwind = $Unwind.make _
 
-  case class $Group[A](src: A, grouped: Grouped, by: ExprOp \/ Reshape)
+  final case class $Group[A](src: A, grouped: Grouped, by: Reshape.Shape)
       extends PipelineF[A]("$group") {
 
     def reparent[B](newSrc: B) = copy(src = newSrc)
     def rhs = {
       val Bson.Doc(m) = grouped.bson
-      Bson.Doc(m + (Workflow.IdLabel -> by.fold(_.bson, _.bson)))
+      Bson.Doc(m + (Workflow.IdLabel -> by.fold(_.cata(bsonƒ), _.bson)))
     }
 
     def empty = copy(grouped = Grouped(ListMap()))
 
-    def getAll: List[(BsonField.Leaf, ExprOp.GroupOp)] =
+    def getAll: List[(BsonField.Leaf, Accumulator)] =
       grouped.value.toList
 
     def deleteAll(fields: List[BsonField.Leaf]): Workflow.$Group[A] = {
       empty.setAll(getAll.filterNot(t => fields.exists(t._1 == _)))
     }
 
-    def setAll(vs: Seq[(BsonField.Leaf, ExprOp.GroupOp)]) = copy(grouped = Grouped(ListMap(vs: _*)))
+    def setAll(vs: Seq[(BsonField.Leaf, Accumulator)]) = copy(grouped = Grouped(ListMap(vs: _*)))
   }
   object $Group {
     def make(
-      grouped: Grouped, by: ExprOp \/ Reshape)(
+      grouped: Grouped, by: Reshape.Shape)(
       src: Workflow):
         Workflow =
-      coalesce(Term($Group(src, grouped, by)))
+      coalesce(Fix($Group(src, grouped, by)))
   }
   val $group = $Group.make _
 
-  case class $Sort[A](src: A, value: NonEmptyList[(BsonField, SortType)])
+  final case class $Sort[A](src: A, value: NonEmptyList[(BsonField, SortType)])
       extends ShapePreservingF[A]("$sort") {
     def reparent[B](newSrc: B) = copy(src = newSrc)
     // Note: ListMap preserves the order of entries.
@@ -1021,7 +778,7 @@ object Workflow {
   object $Sort {
     def make(value: NonEmptyList[(BsonField, SortType)])(src: Workflow):
         Workflow =
-      coalesce(Term($Sort(src, value)))
+      coalesce(Fix($Sort(src, value)))
   }
   val $sort = $Sort.make _
 
@@ -1033,18 +790,18 @@ object Workflow {
    * The latter seems preferable, but currently the forking semantics are not
    * clear.
    */
-  case class $Out[A](src: A, collection: Collection)
+  final case class $Out[A](src: A, collection: Collection)
       extends ShapePreservingF[A]("$out") {
     def reparent[B](newSrc: B) = copy(src = newSrc)
     def rhs = Bson.Text(collection.collectionName)
   }
   object $Out {
     def make(collection: Collection)(src: Workflow): Workflow =
-      coalesce(Term($Out(src, collection)))
+      coalesce(Fix($Out(src, collection)))
   }
   val $out = $Out.make _
 
-  case class $GeoNear[A](
+  final case class $GeoNear[A](
     src: A,
     near: (Double, Double), distanceField: BsonField,
     limit: Option[Int], maxDistance: Option[Double],
@@ -1074,12 +831,12 @@ object Workflow {
       uniqueDocs: Option[Boolean])(
       src: Workflow):
         Workflow =
-      coalesce(Term($GeoNear(src, near, distanceField, limit, maxDistance, query, spherical, distanceMultiplier, includeLocs, uniqueDocs)))
+      coalesce(Fix($GeoNear(src, near, distanceField, limit, maxDistance, query, spherical, distanceMultiplier, includeLocs, uniqueDocs)))
   }
   val $geoNear = $GeoNear.make _
 
   sealed trait MapReduceF[A] extends SingleSourceF[A] {
-    def newMR(base: DocVar, src: WorkflowTask, sel: Option[Selector], sort: Option[NonEmptyList[(BsonField, SortType)]], count: Option[Long]): (ExprOp.DocVar, WorkflowTask)
+    def newMR(base: DocVar, src: WorkflowTask, sel: Option[Selector], sort: Option[NonEmptyList[(BsonField, SortType)]], count: Option[Long]): (DocVar, WorkflowTask)
   }
 
   /**
@@ -1088,9 +845,8 @@ object Workflow {
     [Flat]$Maps) and the second is the document itself. The function must
     return a 2-element array containing the new key and new value.
     */
-  case class $Map[A](src: A, fn: Js.AnonFunDecl, scope: Scope) extends MapReduceF[A] {
+  final case class $Map[A](src: A, fn: Js.AnonFunDecl, scope: Scope) extends MapReduceF[A] {
     import $Map._
-    import Js._
 
     def newMR(base: DocVar, src: WorkflowTask, sel: Option[Selector], sort: Option[NonEmptyList[(BsonField, SortType)]], count: Option[Long]) =
       (ExprVar,
@@ -1110,7 +866,7 @@ object Workflow {
 
     def make(fn: Js.AnonFunDecl, scope: Scope)(src: Workflow):
         Workflow =
-      coalesce(Term($Map(src, fn, scope)))
+      coalesce(Fix($Map(src, fn, scope)))
 
     def compose(g: Js.AnonFunDecl, f: Js.AnonFunDecl): Js.AnonFunDecl =
       Js.AnonFunDecl(List("key", "value"), List(
@@ -1146,10 +902,10 @@ object Workflow {
 
   // FIXME: this one should become $Map, with the other one being replaced by
   // a new op that combines a map and reduce operation?
-  case class $SimpleMap[A](src: A, expr: JsMacro, flatten: List[JsMacro], scope: Scope)
+  final case class $SimpleMap[A](src: A, exprs: NonEmptyList[CardinalExpr[JsFn]], scope: Scope)
       extends MapReduceF[A] {
     def getAll: Option[List[BsonField]] = {
-      def loop(x: Term[JsCore]): Option[List[BsonField]] = x.unFix match {
+      def loop(x: Fix[JsCore]): Option[List[BsonField]] = x.unFix match {
         case JsCore.Obj(values) => Some(values.toList.flatMap { case (k, v) =>
           val n = BsonField.Name(k)
           loop(v).map(_.map(n \ _)).getOrElse(List(n))
@@ -1159,13 +915,13 @@ object Workflow {
       // Note: this is not safe if `expr` inspects the argument to decide what
       // JS to construct, but all we need here is names of fields that we may
       // be able to optimize away.
-      loop(expr(JsCore.Ident("?").fix))
+      loop(simpleExpr(JsCore.Ident("?").fix))
     }
 
     def deleteAll(fields: List[BsonField]): $SimpleMap[A] = {
-      def loop(x: Term[JsCore], fields: List[List[BsonField.Leaf]]): Option[Term[JsCore]] = x.unFix match {
+      def loop(x: Fix[JsCore], fields: List[List[BsonField.Leaf]]): Option[Fix[JsCore]] = x.unFix match {
         case JsCore.Obj(values) => Some(JsCore.Obj(
-          values.collect(Function.unlift[(String, Term[JsCore]), (String, Term[JsCore])] { t =>
+          values.collect(Function.unlift[(String, Fix[JsCore]), (String, Fix[JsCore])] { t =>
             val (k, v) = t
             if (fields contains List(BsonField.Name(k))) None
             else {
@@ -1181,69 +937,87 @@ object Workflow {
         case _ => Some(x)
       }
 
-      $SimpleMap(src,
-        JsMacro(base => loop(expr(base), fields.map(_.flatten)).getOrElse(JsCore.Literal(Js.Null).fix)),
-        flatten,
-        scope)
+      exprs match {
+        case NonEmptyList(MapExpr(expr)) =>
+          $SimpleMap(src,
+            NonEmptyList(
+              MapExpr(JsFn(JsCore.Ident("base"), loop(expr(JsCore.Ident("base").fix), fields.map(_.flatten.toList)).getOrElse(JsCore.Literal(Js.Null).fix)))),
+            scope)
+        case _ => this
+      }
     }
-
 
     private def fn: Js.AnonFunDecl = {
       import JsCore._
 
-      def body(fs: List[(JsMacro, String)]) =
+      def body(fs: List[(CardinalExpr[JsFn], String)]) =
         Js.AnonFunDecl(List("key", "value"),
           List(
             Js.VarDef(List("rez" -> Js.AnonElem(Nil))),
-            fs.foldRight[Term[JsCore] => Js.Stmt](b =>
-              Call(Select(Ident("rez").fix, "push").fix,
+            fs.foldRight[Fix[JsCore] => Js.Stmt](b =>
+              Js.Call(Js.Select(Js.Ident("rez"), "push"),
                 List(
-                  Arr(List(
-                    Call(Ident("ObjectId").fix, Nil).fix,
-                    expr(b))).fix)).fix.toJs) {
-              case ((m, n), inner) => b =>
+                  Js.AnonElem(List(
+                    Js.Call(Js.Ident("ObjectId"), Nil),
+                    b.toJs))))){
+              case ((MapExpr(m), n), inner) => b =>
+                Js.Block(List(
+                  Js.VarDef(List(n -> m(b).toJs)),
+                  inner(Ident(n).fix)))
+              case ((FlatExpr(m), n), inner) => b =>
                 Js.ForIn(Js.Ident("elem"), m(b).toJs,
                   Js.Block(List(
                     Js.VarDef(List(n -> Js.Call(Js.Ident("clone"), List(b.toJs)))),
-                    safeAssign(m(Ident(n).fix), Access(m(b), Ident("elem").fix).fix),
+                    unsafeAssign(m(Ident(n).fix), Access(m(b), Ident("elem").fix).fix),
                     inner(Ident(n).fix))))
             }(Ident("value").fix),
             Js.Return(Js.Ident("rez"))))
 
-      body(flatten.zipWithIndex.map(("each" + _).second))
+      body(exprs.toList.zipWithIndex.map(("each" + _).second))
     }
 
-    def >>>(that: $SimpleMap[A]) =
+    def >>>(that: $SimpleMap[A]) = {
       $SimpleMap(
         this.src,
-        this.expr >>> that.expr,
-        this.flatten ++ that.flatten.map(this.expr >>> _),
-        this.scope ++ that.scope)
+        (this.exprs.last, that.exprs.head) match {
+          case (MapExpr(l), MapExpr(r)) =>
+            this.exprs.init <::: NonEmptyList.nel(MapExpr(l >>> r), that.exprs.tail)
+          case _ => this.exprs <+> that.exprs
+        },
+        this.scope <+> that.scope)
+    }
 
     def raw = {
       import JsCore._
 
-      val funcs = (expr :: flatten).map(_(Ident("_").fix).para(findFunctionsƒ)).foldLeft(Set[String]())(_ ++ _)
+      val funcs = (exprs).map(_.copoint(Ident("_").fix).para(findFunctionsƒ)).foldLeft(Set[String]())(_ ++ _)
 
-      if (flatten.isEmpty)
-        $Map(src,
-          Js.AnonFunDecl(List("key", "value"), List(
-            Js.Return(Arr(List(
-              Ident("key").fix,
-              expr(Ident("value").fix))).fix.toJs))),
-          scope ++ $SimpleMap.implicitScope(funcs))
-      else
-        $FlatMap(src, fn, $SimpleMap.implicitScope(funcs + "clone") ++ scope)
+      exprs match {
+        case NonEmptyList(MapExpr(expr)) =>
+          $Map(src,
+            Js.AnonFunDecl(List("key", "value"), List(
+              Js.Return(Arr(List(
+                Ident("key").fix,
+                expr(Ident("value").fix))).fix.toJs))),
+            scope <+> $SimpleMap.implicitScope(funcs))
+        case _ =>
+          $FlatMap(src, fn, $SimpleMap.implicitScope(funcs + "clone") ++ scope)
+      }
     }
 
     def newMR(base: DocVar, src: WorkflowTask, sel: Option[Selector], sort: Option[NonEmptyList[(BsonField, SortType)]], count: Option[Long]) =
       raw.newMR(base, src, sel, sort, count)
 
     def reparent[B](newSrc: B) = copy(src = newSrc)
+
+    def simpleExpr = exprs.foldRight(JsFn.identity) {
+      case (MapExpr(expr), acc) => expr >>> acc
+      case (_,             acc) => acc
+    }
   }
   object $SimpleMap {
-    def make(expr: JsMacro, flatten: List[JsMacro], scope: Scope)(src: Workflow): Workflow =
-      coalesce(Term($SimpleMap(src, expr, flatten, scope)))
+    def make(exprs: NonEmptyList[CardinalExpr[JsFn]], scope: Scope)(src: Workflow): Workflow =
+      coalesce(Fix($SimpleMap(src, exprs, scope)))
 
     def implicitScope(fs: Set[String]) =
       $SimpleMap.jsLibrary.filter(x => fs.exists(_  == x._1))
@@ -1284,10 +1058,9 @@ object Workflow {
     return an array of 2-element arrays, each containing a new key and a new
     value.
     */
-  case class $FlatMap[A](src: A, fn: Js.AnonFunDecl, scope: Scope)
+  final case class $FlatMap[A](src: A, fn: Js.AnonFunDecl, scope: Scope)
       extends MapReduceF[A] {
     import $FlatMap._
-    import Js._
 
     def newMR(base: DocVar, src: WorkflowTask, sel: Option[Selector], sort: Option[NonEmptyList[(BsonField, SortType)]], count: Option[Long]) =
       (ExprVar,
@@ -1307,7 +1080,7 @@ object Workflow {
 
     def make(fn: Js.AnonFunDecl, scope: Scope)(src: Workflow):
         Workflow =
-      coalesce(Term($FlatMap(src, fn, scope)))
+      coalesce(Fix($FlatMap(src, fn, scope)))
 
     private def composition(g: Js.AnonFunDecl, f: Js.AnonFunDecl) =
       Call(
@@ -1342,10 +1115,8 @@ object Workflow {
     Takes a function of two parameters – a key and an array of values. The
     function must return a single value.
     */
-  case class $Reduce[A](src: A, fn: Js.AnonFunDecl, scope: Scope)
+  final case class $Reduce[A](src: A, fn: Js.AnonFunDecl, scope: Scope)
       extends MapReduceF[A] {
-    import $Reduce._
-
     def newMR(base: DocVar, src: WorkflowTask, sel: Option[Selector], sort: Option[NonEmptyList[(BsonField, SortType)]], count: Option[Long]) =
       (ExprVar,
         MapReduceTask(src,
@@ -1364,7 +1135,7 @@ object Workflow {
 
     def make(fn: Js.AnonFunDecl, scope: Scope)(src: Workflow):
         Workflow =
-      coalesce(Term($Reduce(src, fn, scope)))
+      coalesce(Fix($Reduce(src, fn, scope)))
 
     val reduceNOP =
       Js.AnonFunDecl(List("key", "values"), List(
@@ -1383,109 +1154,113 @@ object Workflow {
   /**
     Performs a sequence of operations, sequentially, merging their results.
     */
-  case class $FoldLeft[A](head: A, tail: NonEmptyList[A])
+  final case class $FoldLeft[A](head: A, tail: NonEmptyList[A])
       extends WorkflowF[A]
   object $FoldLeft {
     def make(head: Workflow, tail: NonEmptyList[Workflow]):
         Workflow =
-      coalesce(Term($FoldLeft(head, tail)))
+      coalesce(Fix($FoldLeft(head, tail)))
   }
   def $foldLeft(first: Workflow, second: Workflow, rest: Workflow*) =
     $FoldLeft.make(first, NonEmptyList.nel(second, rest.toList))
 
-  implicit def WorkflowFRenderTree(implicit RC: RenderTree[Collection], RS: RenderTree[Selector], RE: RenderTree[ExprOp], RG: RenderTree[Grouped], RJ: RenderTree[Js], RJM: RenderTree[JsMacro]):
-      RenderTree[WorkflowF[Unit]] =
-    new RenderTree[WorkflowF[Unit]] {
-      def nodeType(subType: String) = "Workflow" :: subType :: Nil
+  implicit val WorkflowFRenderTree = new RenderTree[WorkflowF[Unit]] {
+    val wfType = "Workflow" :: Nil
 
-      def render(v: WorkflowF[Unit]) = v match {
-        case $Pure(value)       => Terminal(value.toString, nodeType("$Pure"))
-        case $Read(coll)        => RC.render(coll).copy(nodeType = nodeType("$Read"))
-        case $Match(_, sel)     =>
-          NonTerminal("", RS.render(sel) :: Nil, nodeType("$Match"))
-        case $Project(_, shape, xId) =>
-          NonTerminal("",
-            Reshape.renderReshape(shape) :+
-              Terminal("", nodeType(xId.toString)),
-            nodeType("$Project"))
-        case $Redact(_, value) => NonTerminal("",
-          RE.render(value) ::
-            Nil,
-          nodeType("$Redact"))
-        case $Limit(_, count)  => Terminal(count.toString, nodeType("$Limit"))
-        case $Skip(_, count)   => Terminal(count.toString, nodeType("$Skip"))
-        case $Unwind(_, field) => Terminal(field.toString, nodeType("$Unwind"))
-        case $Group(_, grouped, -\/ (expr))
-            => NonTerminal("",
-              RG.render(grouped) ::
-                Terminal(expr.toString, nodeType("By")) ::
-                Nil,
-              nodeType("$Group"))
-        case $Group(_, grouped, \/- (by))
-            => NonTerminal("",
-              RG.render(grouped) ::
-                NonTerminal("", Reshape.renderReshape(by), nodeType("By")) ::
-                Nil,
-              nodeType("$Group"))
-        case $Sort(_, value)   => NonTerminal("",
-          value.map { case (field, st) => Terminal(field.asText + " -> " + st, nodeType("SortKey")) }.toList,
-          nodeType("$Sort"))
-        case $GeoNear(_, near, distanceField, limit, maxDistance, query, spherical, distanceMultiplier, includeLocs, uniqueDocs)
-            => NonTerminal("",
-              Terminal(near.toString, nodeType("$GeoNear") :+ "Near") ::
-                Terminal(distanceField.toString, nodeType("$GeoNear") :+ "DistanceField") ::
-                Terminal(limit.toString, nodeType("$GeoNear") :+ "Limit") ::
-                Terminal(maxDistance.toString, nodeType("$GeoNear") :+ "MaxDistance") ::
-                Terminal(query.toString, nodeType("$GeoNear") :+ "Query") ::
-                Terminal(spherical.toString, nodeType("$GeoNear") :+ "Spherical") ::
-                Terminal(distanceMultiplier.toString, nodeType("$GeoNear") :+ "DistanceMultiplier") ::
-                Terminal(includeLocs.toString, nodeType("$GeoNear") :+ "IncludeLocs") ::
-                Terminal(uniqueDocs.toString, nodeType("$GeoNear") :+ "UniqueDocs") ::
-                Nil,
-              nodeType("$GeoNear"))
+    def render(v: WorkflowF[Unit]) = v match {
+      case $Pure(value)       => Terminal("$Pure" :: wfType, Some(value.toString))
+      case $Read(coll)        => coll.render.copy(nodeType = "$Read" :: wfType)
+      case $Match(_, sel)     =>
+        NonTerminal("$Match" :: wfType, None, sel.render :: Nil)
+      case $Project(_, shape, xId) =>
+        NonTerminal("$Project" :: wfType, None,
+          Reshape.renderReshape(shape) :+
+            Terminal(xId.toString :: "$Project" :: wfType, None))
+      case $Redact(_, value) => NonTerminal("$Redact" :: wfType, None,
+        value.render ::
+          Nil)
+      case $Limit(_, count)  => Terminal("$Limit" :: wfType, Some(count.toString))
+      case $Skip(_, count)   => Terminal("$Skip" :: wfType, Some(count.toString))
+      case $Unwind(_, field) => Terminal("$Unwind" :: wfType, Some(field.toString))
+      case $Group(_, grouped, -\/ (expr)) =>
+        val nt = "$Group" :: wfType
+        NonTerminal(nt, None,
+          grouped.render ::
+            Terminal("By" :: nt, Some(expr.toString)) ::
+            Nil)
+      case $Group(_, grouped, \/- (by)) =>
+        val nt = "$Group" :: wfType
+        NonTerminal(nt, None,
+          grouped.render ::
+            NonTerminal("By" :: nt, None, Reshape.renderReshape(by)) ::
+            Nil)
+      case $Sort(_, value)   =>
+        val nt = "$Sort" :: wfType
+        NonTerminal(nt, None,
+          value.map { case (field, st) => Terminal("SortKey" :: nt, Some(field.asText + " -> " + st)) }.toList)
+      case $GeoNear(_, near, distanceField, limit, maxDistance, query, spherical, distanceMultiplier, includeLocs, uniqueDocs) =>
+        val nt = "$GeoNear" :: wfType
+        NonTerminal(nt, None,
+          Terminal("Near" :: nt, Some(near.toString)) ::
+            Terminal("DistanceField" :: nt, Some(distanceField.toString)) ::
+            Terminal("Limit" :: nt, Some(limit.toString)) ::
+            Terminal("MaxDistance" :: nt, Some(maxDistance.toString)) ::
+            Terminal("Query" :: nt, Some(query.toString)) ::
+            Terminal("Spherical" :: nt, Some(spherical.toString)) ::
+            Terminal("DistanceMultiplier" :: nt, Some(distanceMultiplier.toString)) ::
+            Terminal("IncludeLocs" :: nt, Some(includeLocs.toString)) ::
+            Terminal("UniqueDocs" :: nt, Some(uniqueDocs.toString)) ::
+            Nil)
 
-        case $Map(_, fn, scope) => NonTerminal("",
-          RJ.render(fn) ::
-            Terminal((scope ∘ (_.toJs.render(2))).toString, nodeType("$Map") :+ "Scope") ::
-            Nil,
-          nodeType("$Map"))
-        case $FlatMap(_, fn, scope) => NonTerminal("",
-          RJ.render(fn) ::
-            Terminal((scope ∘ (_.toJs.render(2))).toString, nodeType("$Map") :+ "Scope") ::
-            Nil,
-          nodeType("$FlatMap"))
-        case $SimpleMap(_, expr, flatten, scope) => NonTerminal("",
-            RJM.render(expr).copy(nodeType = nodeType("$SimpleMap") :+ "Expr") ::
-              (flatten.map(RJM.render(_).copy(nodeType = nodeType("$SimpleMap") :+ "Flatten")) :+
-                Terminal((scope ∘ (_.toJs.render(2))).toString, nodeType("$SimpleMap") :+ "Scope")),
-            nodeType("$SimpleMap"))
-        case $Reduce(_, fn, scope) => NonTerminal("",
-          RJ.render(fn) ::
-            Terminal((scope ∘ (_.toJs.render(2))).toString, nodeType("$Map") :+ "Scope") ::
-            Nil,
-          nodeType("$Reduce"))
-        case $Out(_, coll) => RC.render(coll).copy(nodeType = nodeType("$Out"))
-        case $FoldLeft(_, _) => Terminal("", nodeType("$FoldLeft"))
-      }
+      case $Map(_, fn, scope) =>
+        val nt = "$Map" :: wfType
+        NonTerminal(nt, None,
+          JSRenderTree.render(fn) ::
+            Terminal("Scope" :: nt, Some((scope ∘ (_.toJs.pprint(2))).toString)) ::
+            Nil)
+      case $FlatMap(_, fn, scope) =>
+        val nt = "$FlatMap" :: wfType
+        NonTerminal(nt, None,
+          JSRenderTree.render(fn) ::
+            Terminal("Scope" :: nt, Some((scope ∘ (_.toJs.pprint(2))).toString)) ::
+            Nil)
+      case $SimpleMap(_, exprs, scope) =>
+        val nt = "$SimpleMap" :: wfType
+        NonTerminal(nt, None,
+          exprs.toList.map {
+            case MapExpr(e)  => NonTerminal("Map" :: nt, None, List(e.render))
+	    case FlatExpr(e) => NonTerminal("Flatten" :: nt, None, List(e.render))          } :+
+            Terminal("Scope" :: nt, Some((scope ∘ (_.toJs.pprint(2))).toString)))
+      case $Reduce(_, fn, scope) =>
+        val nt = "$Reduce" :: wfType
+        NonTerminal(nt, None,
+          JSRenderTree.render(fn) ::
+            Terminal("Scope" :: nt, Some((scope ∘ (_.toJs.pprint(2))).toString)) ::
+            Nil)
+      case $Out(_, coll) => coll.render.copy(nodeType = "$Out" :: wfType)
+      case $FoldLeft(_, _) => Terminal("$FoldLeft" :: wfType, None)
+    }
+  }
+
+  implicit val WorkflowRenderTree = new RenderTree[Workflow] {
+    val wfType = "Workflow" :: Nil
+
+    def chain(op: Workflow): List[RenderedTree] = op.unFix match {
+      case ss: SingleSourceF[Workflow] =>
+        chain(ss.src) :+ Traverse[WorkflowF].void(ss).render
+      case ms => List(render(Fix(ms)))
     }
 
-  implicit def WorkflowRenderTree(implicit RW: RenderTree[WorkflowF[Unit]]):
-      RenderTree[Workflow] =
-    new RenderTree[Workflow] {
-      def nodeType(subType: String) = "Workflow" :: subType :: Nil
-
-      def chain(op: Workflow): List[RenderedTree] = op.unFix match {
-        case ss: SingleSourceF[Workflow] =>
-          chain(ss.src) :+ RW.render(Traverse[WorkflowF].void(ss))
-        case ms => List(render(Term(ms)))
-      }
-
-      def render(v: Workflow) = v.unFix match {
-        case op: SourceOp    => RW.render(op.void)
-        case _: SingleSourceF[Workflow] =>
-          NonTerminal("", chain(v), nodeType("Chain"))
-        case $FoldLeft(_, _) =>
-          NonTerminal("", v.children.map(render(_)), nodeType("$FoldLeft"))
-      }
+    def render(v: Workflow) = v.unFix match {
+      case op: SourceOp    => op.void.render
+      case _: SingleSourceF[Workflow] =>
+        NonTerminal("Chain" :: wfType, None, chain(v))
+      case $FoldLeft(_, _) =>
+        NonTerminal("$FoldLeft" :: wfType, None, v.children.map(render(_)))
     }
+  }
+
+  implicit val CrystallizedRenderTree = new RenderTree[Crystallized] {
+    def render(v: Crystallized) = v.op.render
+  }
 }

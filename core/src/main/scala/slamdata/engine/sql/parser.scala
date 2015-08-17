@@ -1,22 +1,42 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.sql
 
-import slamdata.engine.{ParsingError, GenericParsingError}
-import slamdata.engine.fp._
+import slamdata.Predef._
+import slamdata.fp._
+import slamdata.engine.fs._; import Path._
 import slamdata.engine.std._
 
+import scala.Any
 import scala.util.matching.Regex
-
-import scala.util.parsing.combinator._
 import scala.util.parsing.combinator.lexical._
 import scala.util.parsing.combinator.syntactical._
-import scala.util.parsing.combinator.token._
-
 import scala.util.parsing.input.CharArrayReader.EofCh
 
 import scalaz._
 import Scalaz._
 
-case class Query(value: String)
+sealed trait ParsingError { def message: String}
+final case class GenericParsingError(message: String) extends ParsingError
+final case class ParsingPathError(error: PathError) extends ParsingError {
+  def message = error.message
+}
+
+final case class Query(value: String)
 
 class SQLParser extends StandardTokenParsers {
   class SqlLexical extends StdLexical {
@@ -68,17 +88,17 @@ class SQLParser extends StandardTokenParsers {
 
   def floatLit: Parser[String] = elem("decimal", _.isInstanceOf[lexical.FloatLit]) ^^ (_.chars)
 
-  lexical.reserved += (
+  ignore(lexical.reserved += (
     "and", "as", "asc", "between", "by", "case", "cross", "date", "desc", "distinct",
     "else", "end", "escape", "exists", "false", "for", "from", "full", "group", "having", "in",
     "inner", "interval", "is", "join", "left", "like", "limit", "not", "null",
     "offset", "oid", "on", "or", "order", "outer", "right", "select", "then", "time",
     "timestamp", "true", "when", "where"
-  )
+  ))
 
-  lexical.delimiters += (
+  ignore(lexical.delimiters += (
     "*", "+", "-", "%", "~", "||", "<", "=", "<>", "!=", "<=", ">=", ">", "/", "(", ")", ",", ".", ";", "[", "]", "{", "}"
-  )
+  ))
 
   override def keyword(name: String): Parser[String] =
     if (lexical.reserved.contains(name))
@@ -248,7 +268,7 @@ class SQLParser extends StandardTokenParsers {
     numericLit ^^ { case i => IntLiteral(i.toLong) } |
     floatLit ^^ { case f => FloatLiteral(f.toDouble) } |
     stringLit ^^ { case s => StringLiteral(s) } |
-    keyword("null") ^^^ NullLiteral.apply |
+    keyword("null") ^^^ NullLiteral |
     keyword("true") ^^^ BoolLiteral(true) |
     keyword("false") ^^^ BoolLiteral(false)
 
@@ -326,27 +346,24 @@ class SQLParser extends StandardTokenParsers {
 }
 
 object SQLParser {
-  import slamdata.engine.fs._
-
-  def interpretPaths(expr: Expr, mountPath: Path, basePath: Path):
-      PathError \/ Expr = {
-    type E[A] = EitherT[Free.Trampoline, PathError, A]
-    def fail[A](err: PathError): E[A] = EitherT.left(err.pure[Free.Trampoline])
-    def emit[A](a: A): E[A] = EitherT.right(a.pure[Free.Trampoline])
-
-    expr.mapUpM[E](
-      proj     = emit(_),
-      relation = r => r match {
+  def mapPathsM[F[_]: Monad](expr: Expr, f: Path => F[Path]): F[Expr] =
+    expr.mapUpM[F](
+      proj     = _.point[F],
+      relation = {
         case TableRelationAST(path, alias) =>
-          (for {
-            p <- Path(path).interpret(mountPath, basePath)
-          } yield TableRelationAST(p.pathname, alias)).fold(fail(_), emit(_))
-        case _ => emit(r)
+          for {
+            p <- f(Path(path))
+          } yield TableRelationAST(p.pathname, alias)
+        case r => r.point[F]
       },
-      expr     = emit(_),
-      groupBy  = emit(_),
-      orderBy  = emit(_),
-      case0    = emit(_)
-    ).run.run
-  }
+      expr     = _.point[F],
+      groupBy  = _.point[F],
+      orderBy  = _.point[F],
+      case0    = _.point[F])
+
+  val mapPathsE = mapPathsM[PathError \/ ?] _
+
+  def parseInContext(sql: Query, basePath: Path):
+      ParsingError \/ Expr =
+    new SQLParser().parse(sql).flatMap(mapPathsE(_, _.from(basePath)).leftMap(ParsingPathError))
 }

@@ -1,15 +1,16 @@
 package slamdata.engine.physical.mongodb
 
+import slamdata.Predef._
+
 import org.specs2.mutable._
+import org.specs2.scalaz._
 import org.specs2.ScalaCheck
 
 import scala.collection.immutable.ListMap
 
 import scalaz._
-import Scalaz._
 
 import slamdata.engine._
-import slamdata.engine.fp._
 
 class BsonCodecSpecs extends Specification with ScalaCheck with DisjunctionMatchers {
   import BsonCodec._
@@ -26,7 +27,7 @@ class BsonCodecSpecs extends Specification with ScalaCheck with DisjunctionMatch
 
   "fromData" should {
     "fail with bad Id" in {
-      fromData(Data.Id("invalid")) must beAnyLeftDisj
+      fromData(Data.Id("invalid")) must beLeftDisjunction
     }
 
     "be isomorphic for preserved values" ! prop { (data: Data) =>
@@ -44,7 +45,7 @@ class BsonCodecSpecs extends Specification with ScalaCheck with DisjunctionMatch
       }
 
       preserved ==> {
-        fromData(data).map(toData) must beRightDisj(data)
+        fromData(data).map(toData) must beRightDisjunction(data)
       }
     }
 
@@ -52,7 +53,7 @@ class BsonCodecSpecs extends Specification with ScalaCheck with DisjunctionMatch
       // (toData >=> fromData >=> toData) == toData
 
       val data = toData(bson)
-      fromData(data).map(toData _) must beRightDisj(data)
+      fromData(data).map(toData _) must beRightDisjunction(data)
     }
   }
 
@@ -67,8 +68,8 @@ class BsonCodecSpecs extends Specification with ScalaCheck with DisjunctionMatch
       // can be converted to Data and back to Bson, recovering the same
       // Bson value.
       fromData(data).fold(
-        err => sys.error(err.toString),
-        bson => fromData(toData(bson)) must beRightDisj(bson))
+        err => scala.sys.error(err.toString),
+        bson => fromData(toData(bson)) must beRightDisjunction(bson))
     }
   }
 
@@ -77,7 +78,7 @@ class BsonCodecSpecs extends Specification with ScalaCheck with DisjunctionMatch
 
   "round trip to repr (all Data types)" ! prop { (data: Data) =>
     BsonCodec.fromData(data).fold(
-      err => sys.error(err.message),
+      err => scala.sys.error(err.message),
       bson => {
         val wrapped = Bson.Doc(ListMap("value" -> bson))
         Bson.fromRepr(wrapped.repr) must_== wrapped

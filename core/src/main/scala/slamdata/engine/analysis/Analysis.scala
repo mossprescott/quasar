@@ -1,16 +1,29 @@
+/*
+ * Copyright 2014 - 2015 SlamData Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package slamdata.engine.analysis
+
+import slamdata.Predef._
+import slamdata.fp._
 
 import Function.untupled
 
 import scalaz._
-
 import scalaz.std.list._
-import scalaz.std.vector._
 import scalaz.std.map._
-import scalaz.std.tuple._
-import scalaz.std.iterable._
-
-import scala.collection.JavaConverters._
 
 object Analysis {
   def readTree[N, A, B, E](f: AnnotatedTree[N, A] => Analysis[N, A, B, E]): Analysis[N, A, B, E] = tree => {
@@ -18,7 +31,7 @@ object Analysis {
   }
 
   def annotate[N, A, B, E: Semigroup](f: N => Validation[E, B]): Analysis[N, A, B, E] = tree => {
-    Traverse[List].sequence[({type f[a]=Validation[E, a]})#f, (N, B)](tree.nodes.map(n => f(n).map(b => (n, b)))).map { list =>
+    Traverse[List].sequence[Validation[E, ?], (N, B)](tree.nodes.map(n => f(n).map(b => (n, b)))).map { list =>
       tree.annotate(list.toMap)
     }
   }
@@ -28,7 +41,7 @@ object Analysis {
     implicit val sg = Semigroup.firstSemigroup[B]
 
     tree.fork(new java.util.IdentityHashMap[N, B])({ (acc, node) =>
-      analyzer((k: N) => acc.get(k), node).map(b => { acc.put(node, b); acc })
+      analyzer((k: N) => acc.get(k), node).map(b => { ignore(acc.put(node, b)); acc })
     }).map { vector =>
       val collapsed = vector.foldLeft(new java.util.IdentityHashMap[N, B]) { (acc, map) => acc.putAll(map); acc }
       tree.annotate(n => collapsed.get(n))
