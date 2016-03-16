@@ -121,23 +121,19 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
             IgnoreId)))
     }
 
-    // TODO: currently, Data.Obj doesn’t maintain order. The result here will
-    //       change once it does.
     "select complex constant" in {
       plan("select {\"a\": 1, \"b\": 2, \"c\": 3, \"d\": 4, \"e\": 5}{*} limit 3 offset 1") must
         beWorkflow($pure(Bson.Arr(List(
-          Bson.Doc(ListMap("0" -> Bson.Int64(1))),
-          Bson.Doc(ListMap("0" -> Bson.Int64(2)))))))
+          Bson.Doc(ListMap("0" -> Bson.Int64(2))),
+          Bson.Doc(ListMap("0" -> Bson.Int64(3)))))))
 
     }
 
-    // TODO: currently, Data.Obj doesn’t maintain order. The result here will
-    //       change once it does.
     "select complex constant 2" in {
       plan("select {\"a\": 1, \"b\": 2, \"c\": 3, \"d\": 4, \"e\": 5}{*:} limit 3 offset 1") must
       beWorkflow($pure(Bson.Arr(List(
-        Bson.Doc(ListMap("0" -> Bson.Text("a"))),
-        Bson.Doc(ListMap("0" -> Bson.Text("b")))))))
+        Bson.Doc(ListMap("0" -> Bson.Text("b"))),
+        Bson.Doc(ListMap("0" -> Bson.Text("c")))))))
 
     }
 

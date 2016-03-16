@@ -382,7 +382,7 @@ object LogicalPlan {
           } yield plan
         case InvokeF(structural.FlattenMap, args) => for {
           types <- lift(structural.FlattenMap.apply(args.map(_.inferred)).disjunction)
-          consts <- emitName[SemDisj, List[Fix[LogicalPlan]]](args.map(ensureConstraint(_, Constant(Data.Obj(Map("" -> Data.NA))))).sequenceU)
+          consts <- emitName[SemDisj, List[Fix[LogicalPlan]]](args.map(ensureConstraint(_, Constant(Data.Obj(ListMap("" -> Data.NA))))).sequenceU)
           plan  <- unifyOrCheck(inf, types, Invoke(structural.FlattenMap, consts))
         } yield plan
         case InvokeF(f @ Mapping(_, _, _, _, _, _, _), args) =>

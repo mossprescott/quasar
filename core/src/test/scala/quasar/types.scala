@@ -32,7 +32,7 @@ class TypesSpec extends Specification with ScalaCheck with ValidationMatchers wi
   val Azim = Obj(Map("az" -> Dec), Some(Top))
 
   def const(s: String): Type = Const(Data.Str(s))
-  def const(elems: (String, Data)*): Type = Const(Data.Obj(Map(elems: _*)))
+  def const(elems: (String, Data)*): Type = Const(Data.Obj(ListMap(elems: _*)))
 
   "typecheck" should {
     "succeed with int/int" in {
@@ -625,7 +625,7 @@ class TypesSpec extends Specification with ScalaCheck with ValidationMatchers wi
 
     val exField = Obj(Map(), Some(Int))
     val exNamed = Obj(Map("i" -> Int), None)
-    val exConstObj = Const(Data.Obj(Map("a" -> Data.Int(0))))
+    val exConstObj = Const(Data.Obj(ListMap("a" -> Data.Int(0))))
     val exElem = FlexArr(0, None, Int)
     val exIndexed = Arr(List(Int))
     val exSet = Set(Int)

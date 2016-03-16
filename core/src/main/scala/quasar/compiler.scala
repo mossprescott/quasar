@@ -262,7 +262,7 @@ trait Compiler[F[_]] {
       //       ObjectConcat with an empty map on one side, this could be done
       //       in a single foldLeft.
       fields match {
-        case Nil     => LogicalPlan.Constant(Data.Obj(Map()))
+        case Nil     => LogicalPlan.Constant(Data.Obj(ListMap()))
         case x :: xs => xs.foldLeft(x)((a, b) => Fix(ObjectConcat(a, b)))
       }
     }

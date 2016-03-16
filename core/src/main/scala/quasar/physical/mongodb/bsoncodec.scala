@@ -35,12 +35,12 @@ object BsonCodec {
       case Data.Int(value) => \/ right (Bson.Int64(value.toLong))
 
       case Data.Obj(value) =>
-        type MapF[X] = Map[String, X]
+        type MapF[X] = ListMap[String, X]
         type Right[X] = PlannerError \/ X
 
-        val map: MapF[PlannerError \/ Bson] = value.mapValues(fromData _)
+        val map: MapF[PlannerError \/ Bson] = value ∘ (fromData _)
 
-        Traverse[MapF].sequence[Right, Bson](map).map((x: MapF[Bson]) => Bson.Doc(x.toList.toListMap))
+        Traverse[MapF].sequence[Right, Bson](map).map(Bson.Doc(_))
 
       case Data.Arr(value) => value.map(fromData _).sequenceU.map(Bson.Arr.apply _)
 
