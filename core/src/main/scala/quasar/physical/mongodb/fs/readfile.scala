@@ -17,7 +17,6 @@
 package quasar.physical.mongodb.fs
 
 import quasar.Predef._
-import quasar.Data
 import quasar.fp.TaskRef
 import quasar.fp.numeric.{Natural, Positive}
 import quasar.fp.prism._
@@ -57,11 +56,16 @@ object readfile {
     }
   }
 
-  /** Run [[MongoRead]], using the given `MongoClient` in the `Task` monad. */
-  def run(client: MongoClient): Task[MongoRead ~> Task] =
+  /** Run [[MongoRead]], using the given `MongoClient`. */
+  def run[S[_]: Functor](
+    client: MongoClient
+  )(implicit
+    S0: Task :<: S,
+    S1: MongoErrF :<: S
+  ): Task[MongoRead ~> Free[S, ?]] =
     TaskRef[ReadState]((0, Map.empty)) map { ref =>
-      new (MongoRead ~> Task) {
-        def apply[A](rm: MongoRead[A]) = rm.run(ref).run(client)
+      new (MongoRead ~> Free[S, ?]) {
+        def apply[A](rm: MongoRead[A]) = rm.run(ref).runF(client)
       }
     }
 

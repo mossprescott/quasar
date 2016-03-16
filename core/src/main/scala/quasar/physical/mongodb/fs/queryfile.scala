@@ -18,6 +18,7 @@ package quasar.physical.mongodb.fs
 
 import quasar.Predef._
 import quasar._
+import quasar.effect.Failure
 import quasar.fp._
 import quasar.fs.{Path => QPath, _}
 import quasar.javascript._
@@ -26,7 +27,7 @@ import quasar.physical.mongodb._, WorkflowExecutor.WorkflowCursor
 import com.mongodb.async.client.MongoClient
 import matryoshka.{Fix, Recursive}
 import pathy.Path._
-import scalaz._, Scalaz._
+import scalaz.{Failure => _, _}, Scalaz._
 import scalaz.stream._
 import scalaz.concurrent.Task
 
@@ -47,20 +48,24 @@ object queryfile {
     new QueryFileInterpreter(execMongo)
   }
 
-  def run[C](
+  def run[C, S[_]: Functor](
     client: MongoClient,
     defDb: Option[DefaultDb]
-  ): Task[MongoQuery[C, ?] ~> WFTask] = {
-    type QR[A] = QueryR[C, A]
+  )(implicit
+    S0: Task :<: S,
+    S1: MongoErrF :<: S,
+    S2: WorkflowExecErrF :<: S
+  ): Task[MongoQuery[C, ?] ~> Free[S, ?]] = {
     type MQ[A] = MongoQuery[C, A]
+    type F[A]  = Free[S, A]
 
-    def runQR(ref: TaskRef[EvalState[C]]): QR ~> MongoDbIO =
-      new (QR ~> MongoDbIO) {
-        def apply[A](qr: QR[A]) = qr.run((defDb, ref))
+    val wfErr = Failure.Ops[WorkflowExecutionError, S]
+
+    def runMQ(ref: TaskRef[EvalState[C]]): MQ ~> F =
+      new (MQ ~> F) {
+        def apply[A](mq: MQ[A]) =
+          wfErr.unattempt(mq.run.run((defDb, ref)).runF(client))
       }
-
-    def runMQ(ref: TaskRef[EvalState[C]]): MQ ~> WFTask =
-      Hoist[WorkflowExecErrT].hoist(MongoDbIO.runNT(client) compose runQR(ref))
 
     TaskRef((0L, Map.empty: ResultMap[C])) map runMQ
   }
@@ -75,7 +80,6 @@ private final class QueryFileInterpreter[C](
   import Planner.{PlannerError => PPlannerError}
   import Workflow._
   import FileSystemError._, PathError2._, fsops._
-  import LogicalPlan.ReadF
   import Recursive.ops._
   import queryfile._
 
@@ -156,9 +160,9 @@ private final class QueryFileInterpreter[C](
       }).liftM[QRT].liftM[WorkflowExecErrT]
 
     case FileExists(file) =>
-      collFromPathM(file)
-        .flatMap(MongoDbIO.collectionExists(_).liftM[FileSystemErrT])
-        .run.liftM[QRT].liftM[WorkflowExecErrT]
+      Collection.fromPathy(file).fold(
+        κ(false.point[MQ]),
+        coll => MongoDbIO.collectionExists(coll).liftM[QRT].liftM[WorkflowExecErrT])
   }
 
   ////

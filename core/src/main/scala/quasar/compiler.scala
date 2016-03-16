@@ -25,7 +25,6 @@ import quasar.std.StdLib._
 import quasar.SemanticAnalysis._, quasar.SemanticError._
 
 import matryoshka.{ToIdOps => toAllOps, _}, Fix._, Recursive.ops._, FunctorT.ops._
-import org.threeten.bp.{Instant, LocalDate, LocalTime, Duration}
 import scalaz.{Tree => _, _}, Scalaz._
 
 trait Compiler[F[_]] {
@@ -263,7 +262,7 @@ trait Compiler[F[_]] {
       //       ObjectConcat with an empty map on one side, this could be done
       //       in a single foldLeft.
       fields match {
-        case Nil     => LogicalPlan.Constant(Data.Obj(Map()))
+        case Nil     => LogicalPlan.Constant(Data.Obj(ListMap()))
         case x :: xs => xs.foldLeft(x)((a, b) => Fix(ObjectConcat(a, b)))
       }
     }

@@ -24,12 +24,11 @@ import quasar.effect._
 import quasar.fp._, free.freeCatchable
 import quasar.fs.{Path => QPath, _}
 import quasar.fs.mount._
-import quasar.sql.{SQLParser, Query}
+import quasar.sql.SQLParser
 
 import pathy.Path, Path._
 import scalaz.{Failure => _, _}, Scalaz._
 import scalaz.concurrent.Task
-import scalaz.stream.Process
 
 object Repl {
   import Command.{XDir, XFile}
@@ -215,8 +214,8 @@ object Repl {
     M: Mounting.Ops[S]
   ): Free[S, Option[String]] =
     M.lookup(path).map {
-      case MountConfig2.ViewConfig(_, _)                         => "view"
-      case MountConfig2.FileSystemConfig(FileSystemType(typ), _) => typ
+      case MountConfig.ViewConfig(_, _)                         => "view"
+      case MountConfig.FileSystemConfig(FileSystemType(typ), _) => typ
     }.run
 
   def printLog[S[_]: Functor](debugLevel: DebugLevel, log: Vector[PhaseResult])(implicit

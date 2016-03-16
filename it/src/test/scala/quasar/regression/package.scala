@@ -50,7 +50,7 @@ package object regression {
 
     val hfsFailTask: HFSFailureF ~> Task =
       Coyoneda.liftTF[HFSFailure, Task](
-        Failure.toTaskFailure[HierarchicalFileSystemError])
+        Failure.toRuntimeError[HierarchicalFileSystemError])
 
     (TaskRef(Map.empty[ResultHandle, (ADir, ResultHandle)]) |@| TaskRef(0L))(
       (handles, ct) => free.interpret4(

@@ -28,14 +28,14 @@ import scala.math.Ordering
 import argonaut._, Argonaut._
 import org.http4s._, dsl._
 import pathy.Path._
-import scalaz._, concurrent.Task
+import scalaz._
 import scalaz.syntax.monad._
 import scalaz.syntax.traverse._
 import scalaz.syntax.std.boolean._
 import scalaz.std.list._
 
 object metadata {
-  import MountConfig2._
+  import MountConfig._
 
   final case class FsNode(name: String, typ: String, mount: Option[String])
 
@@ -65,7 +65,7 @@ object metadata {
   }
 
   def service[S[_]: Functor](implicit Q: QueryFile.Ops[S], M: Mounting.Ops[S]): QHttpService[S] = {
-    val mountType: MountConfig2 => String = {
+    val mountType: MountConfig => String = {
       case ViewConfig(_, _)         => "view"
       case FileSystemConfig(typ, _) => typ.value
     }
@@ -83,8 +83,7 @@ object metadata {
 
     def fileMetadata(f: AFile): Free[S, QResponse[S]] = respond(
       Q.fileExists(f)
-        .map(_ either Json() or PathError2.pathNotFound(f))
-        .run)
+        .map(_ either Json() or PathError2.pathNotFound(f)))
 
     QHttpService {
       case GET -> AsPath(path) =>

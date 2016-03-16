@@ -34,4 +34,13 @@ object console {
     .flatMapF(e => stderr("Error: " + e).map(_.right))
     .merge
     .handleWith { case err => stderr("Error: " + err.getMessage) }
+
+  /** Check for a Java system property that is defined and has the value
+    * "true", case-insensitively.
+    */
+  def booleanProp(name: String): Task[Boolean] = Task.delay {
+    Option(java.lang.System.getProperty(name)).cata(
+      _.equalsIgnoreCase("true"),
+      false)
+  }
 }

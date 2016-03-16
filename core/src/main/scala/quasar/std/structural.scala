@@ -21,7 +21,7 @@ import quasar._, LogicalPlan._, SemanticError._
 import quasar.fp._
 
 import matryoshka._, Recursive.ops._
-import scalaz._, Scalaz._, NonEmptyList.nel, Validation.{success, failure}
+import scalaz._, Scalaz._, Validation.{success, failure}
 
 trait StructuralLib extends Library {
   import Type._
@@ -33,8 +33,8 @@ trait StructuralLib extends Library {
     noSimplification,
     partialTyper {
       case List(Const(Data.Str(name)), Const(Data.Set(data))) =>
-        Const(Data.Set(data.map(d => Data.Obj(Map(name -> d)))))
-      case List(Const(Data.Str(name)), Const(data)) => Const(Data.Obj(Map(name -> data)))
+        Const(Data.Set(data.map(d => Data.Obj(ListMap(name -> d)))))
+      case List(Const(Data.Str(name)), Const(data)) => Const(Data.Obj(ListMap(name -> data)))
       case List(Const(Data.Str(name)), valueType)   => Obj(Map(name -> valueType), None)
       case List(_, valueType)   => Obj(Map(), Some(valueType))
     },
@@ -336,7 +336,7 @@ trait StructuralLib extends Library {
     // Note: signature does not match VirtualFunc
     def apply[T[_[_]]: Corecursive](args: (T[LogicalPlan], T[LogicalPlan])*): LogicalPlan[T[LogicalPlan]] =
       args.toList match {
-        case Nil      => ConstantF(Data.Obj(Map()))
+        case Nil      => ConstantF(Data.Obj(ListMap()))
         case x :: xs  =>
           xs.foldLeft(MakeObject(x._1, x._2))((a, b) =>
             ObjectConcat(a.embed, MakeObject(b._1, b._2).embed))

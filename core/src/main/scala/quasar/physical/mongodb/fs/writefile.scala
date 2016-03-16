@@ -62,13 +62,16 @@ object writefile {
     }
   }
 
-  /** Run [[MongoWrite]] using the given `MongoClient` in the `Task`
-    * monad.
-    */
-  def run(client: MongoClient): Task[MongoWrite ~> Task] =
+  /** Run [[MongoWrite]] using the given `MongoClient`. */
+  def run[S[_]: Functor](
+    client: MongoClient
+  )(implicit
+    S0: Task :<: S,
+    S1: MongoErrF :<: S
+  ): Task[MongoWrite ~> Free[S, ?]] =
     TaskRef[WriteState]((0, Map.empty)) map { ref =>
-      new (MongoWrite ~> Task) {
-        def apply[A](wm: MongoWrite[A]) = wm.run(ref).run(client)
+      new (MongoWrite ~> Free[S, ?]) {
+        def apply[A](wm: MongoWrite[A]) = wm.run(ref).runF(client)
       }
     }
 

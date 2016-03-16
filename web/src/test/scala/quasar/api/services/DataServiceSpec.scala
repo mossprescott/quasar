@@ -19,17 +19,12 @@ package quasar.api.services
 import quasar.Predef._
 import quasar.Data
 import quasar.DataArbitrary._
-import quasar.DataCodec
-import quasar.Errors.convertError
 import quasar.api._
 import quasar.api.MessageFormat.JsonContentType
 import quasar.api.MessageFormatGen._
-import quasar.effect.Failure
 import quasar.fs.{Path => _, _}
 import quasar.fp.{evalNT, free, liftMT}
 import quasar.fp.numeric._
-import quasar.fp.numeric.SafeIntForVectorArbitrary._
-import quasar.fp.numeric.NumericArbitrary._
 import quasar.fp.prism._
 
 import argonaut.Json
@@ -37,7 +32,6 @@ import argonaut.Argonaut._
 import org.http4s._
 import org.http4s.headers._
 import org.http4s.server.middleware.GZip
-import org.http4s.Uri.Authority
 import org.scalacheck.{Arbitrary, Gen}
 import org.specs2.execute.AsResult
 import org.specs2.mutable.Specification
@@ -56,7 +50,7 @@ import org.scalacheck.{Arbitrary, Gen}
 
 import eu.timepit.refined.numeric.{NonNegative, Negative, Positive => RPositive}
 import eu.timepit.refined.auto._
-import eu.timepit.refined.scalacheck.numeric.greaterEqualArbitraryNat
+import eu.timepit.refined.scalacheck.numeric._
 import shapeless.tag.@@
 
 class DataServiceSpec extends Specification with ScalaCheck with FileSystemFixture with Http4s {
@@ -192,12 +186,12 @@ class DataServiceSpec extends Specification with ScalaCheck with FileSystemFixtu
         }
         "support offset and limit" >> {
           "return expected result if user supplies valid values" ! prop {
-            (filesystem: SingleFileMemState, offset: Int @@ NonNegative, limit: SafeIntForVector @@ RPositive, format: MessageFormat) =>
+            (filesystem: SingleFileMemState, offset: Int @@ NonNegative, limit: Int @@ RPositive, format: MessageFormat) =>
               val request = Request(
-                uri = Uri(path = filesystem.path).+?("offset", offset.toString).+?("limit", limit.value.toString),
+                uri = Uri(path = filesystem.path).+?("offset", offset.toString).+?("limit", limit.toString),
                 headers = Headers(Accept(format.mediaType)))
               val response = service(filesystem.state)(request).run
-              isExpectedResponse(filesystem.contents.drop(offset).take(limit.value), response, format)
+              isExpectedResponse(filesystem.contents.drop(offset).take(limit), response, format)
           }
           "return 400 if provided with" >> {
             "a non-positive limit (0 is invalid)" ! prop { (path: AbsFile[Sandboxed], offset: Natural, limit: Int) =>

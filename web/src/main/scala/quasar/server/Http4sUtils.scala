@@ -22,7 +22,7 @@ import quasar.fp._
 
 import org.http4s.HttpService
 import org.http4s.server.blaze.BlazeBuilder
-import org.http4s.server.{Server => Http4sServer, ServerBuilder}
+import org.http4s.server.{Server => Http4sServer}
 import scalaz.concurrent.Task
 import scalaz._, Scalaz._
 import scala.concurrent.duration.Duration
@@ -54,7 +54,7 @@ object Http4sUtils {
     } yield done
   }
 
-  private def openBrowser(port: Int): Task[Unit] = {
+  def openBrowser(port: Int): Task[Unit] = {
     val url = "http://localhost:" + port + "/"
     Task.delay(java.awt.Desktop.getDesktop().browse(java.net.URI.create(url)))
       .or(stderr("Failed to open browser, please navigate to " + url))
@@ -72,11 +72,10 @@ object Http4sUtils {
   def anyAvailablePort: Task[Int] = anyAvailablePorts[_1].map(_.head)
 
   /** Available port numbers. */
-  def anyAvailablePorts[A <: Nat: ToInt]: Task[Sized[IndexedSeq[Int], A]] = Task.delay {
+  def anyAvailablePorts[N <: Nat: ToInt]: Task[Sized[Seq[Int], N]] = Task.delay {
     Sized.wrap(
-      (1 to toInt[A])
-        .map(_ => { val s = new java.net.ServerSocket(0); (s, s.getLocalPort) })
-        .map { case (s, p) => { s.close; p } })
+      List.tabulate(toInt[N]){_ => val s = new java.net.ServerSocket(0); (s, s.getLocalPort)}
+          .map { case (s, p) => s.close; p})
   }
 
   /** Returns the requested port if available, or the next available port. */
@@ -151,7 +150,7 @@ object Http4sUtils {
   def startAndWait(port: Int, service: (Int => Task[Unit]) => HttpService, openClient: Boolean): Task[Unit] = for {
     result <- startServers(port, service)
     (servers, shutdown) = result
-    _ <- if(openClient) openBrowser(port) else Task.now(())
+    _ <- openBrowser(port).whenM(openClient)
     _ <- stdout("Press Enter to stop.")
     _ <- Task.delay(Task.fork(waitForInput).runAsync(_ => shutdown.run))
     _ <- servers.run // We need to run the servers in order to make sure everything is cleaned up properly

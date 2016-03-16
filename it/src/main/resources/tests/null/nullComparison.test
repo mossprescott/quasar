@@ -1,0 +1,7 @@
+{
+    "name": "filter on `!= null`",
+    "data": "nulls.data",
+    "query": "select distinct (val != null) as expr from nulls where val != null",
+    "predicate": "containsExactly",
+    "expected": [{ "expr": true }]
+}

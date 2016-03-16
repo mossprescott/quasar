@@ -17,21 +17,22 @@
 package quasar
 
 import quasar.api._
-import quasar.effect.Failure
 import quasar.fp._
 import quasar.fs.{FileSystemError, FileSystemFailure, FileSystemFailureF}
 import quasar.fs.mount.hierarchical.{HierarchicalFileSystemError, HFSFailure, HFSFailureF}
 import quasar.main._
-import quasar.physical.mongodb.{WorkflowExecutionError, WorkflowExecErr, WorkflowExecErrF}
+import quasar.physical.mongodb.{MongoErr, MongoErrF, WorkflowExecutionError, WorkflowExecErr, WorkflowExecErrF}
 
+import com.mongodb.MongoException
 import scalaz.{Coyoneda, ~>}
 import scalaz.concurrent.Task
 
 package object server {
-  /** Interprets errors into `Response`s, for use in web services. */
+  /** Interpretes errors into `Response`s, for use in web services. */
   def toResponseOr(evalCfgsIO: MntCfgsIO ~> Task): CfgsErrsIOM ~> ResponseOr = {
-    val f = free.interpret4[FileSystemFailureF, WorkflowExecErrF, HFSFailureF, MntCfgsIO, ResponseOr](
+    val f = free.interpret5[FileSystemFailureF, MongoErrF, WorkflowExecErrF, HFSFailureF, MntCfgsIO, ResponseOr](
       Coyoneda.liftTF[FileSystemFailure, ResponseOr](failureResponseOr[FileSystemError]),
+      Coyoneda.liftTF[MongoErr, ResponseOr](failureResponseOr[MongoException]),
       Coyoneda.liftTF[WorkflowExecErr, ResponseOr](failureResponseOr[WorkflowExecutionError]),
       Coyoneda.liftTF[HFSFailure, ResponseOr](failureResponseOr[HierarchicalFileSystemError]),
       liftMT[Task, ResponseT] compose evalCfgsIO)

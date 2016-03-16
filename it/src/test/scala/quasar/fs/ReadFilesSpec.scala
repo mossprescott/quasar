@@ -20,24 +20,21 @@ import quasar.Predef._
 import quasar.Data
 import quasar.fp._
 import quasar.fp.numeric._
-import quasar.fp.numeric.NumericArbitrary._
 
 import java.lang.RuntimeException
 import scala.annotation.tailrec
 
 import eu.timepit.refined.auto._
 import eu.timepit.refined.numeric.{Positive => RPositive,_}
-import eu.timepit.refined.scalacheck.numeric.chooseRefinedNum
+import eu.timepit.refined.scalacheck.numeric._
 import eu.timepit.refined.W
 import eu.timepit.refined.api.Refined
 import monocle.std.{disjunction => D}
-import org.scalacheck.Arbitrary
 import org.scalacheck.Prop
 import org.specs2.ScalaCheck
 import pathy.Path._
 import scalaz.{EphemeralStream => EStream, _}, Scalaz._
 import scalaz.stream._
-import shapeless.Nat
 
 class ReadFilesSpec extends FileSystemTest[FileSystem](FileSystemTest.allFsUT) with ScalaCheck {
   import ReadFilesSpec._, FileSystemError._, PathError2._
@@ -66,10 +63,12 @@ class ReadFilesSpec extends FileSystemTest[FileSystem](FileSystemTest.allFsUT) w
   def deleteForReading(run: Run): FsTask[Unit] =
     runT(run)(manage.delete(readsPrefix))
 
-  fileSystemShould { _ => implicit run =>
+  fileSystemShould { fs =>
+    implicit val run = fs.testInterpM
+
     "Reading Files" should {
       // Load read-only data
-      step((deleteForReading(run).run.void *> loadForReading(run).run.void).run)
+      step((deleteForReading(fs.setupInterpM).run.void *> loadForReading(fs.setupInterpM).run.void).run)
 
       "open returns PathNotFound when file DNE" >>* {
         val dne = rootDir </> dir("doesnt") </> file("exist")
@@ -169,7 +168,7 @@ class ReadFilesSpec extends FileSystemTest[FileSystem](FileSystemTest.allFsUT) w
         (r.runEither must beRight(l)) and (r.runEither must beRight(l))
       }
 
-      step(deleteForReading(run).runVoid)
+      step(deleteForReading(fs.setupInterpM).runVoid)
     }; ()
   }
 }

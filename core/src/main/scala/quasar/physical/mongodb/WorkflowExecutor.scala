@@ -17,7 +17,7 @@
 package quasar.physical.mongodb
 
 import quasar.Predef._
-import quasar.{EnvironmentError2, EnvErr2T, SeqNameGeneratorT}
+import quasar.{EnvironmentError, EnvErrT, SeqNameGeneratorT}
 import quasar.{NameGenerator => QNameGenerator, _}
 import quasar.fp.prism._
 import quasar.fs.DataCursor
@@ -263,7 +263,7 @@ private[mongodb] abstract class WorkflowExecutor[F[_]: Monad, C] {
     }
   }
 
-  /** This tries to turn a Pipline into a simpler operation (eg, `count()` or
+  /** This tries to turn a Pipeline into a simpler operation (eg, `count()` or
     * `find()`) and falls back to a pipeline if it can’t.
     */
   // TODO: This should really be handled when building the WorkflowTask, but
@@ -348,12 +348,12 @@ object WorkflowExecutor {
   }
 
   /** A `WorkflowExecutor` that executes a `Workflow` in the `MongoDbIO` monad. */
-  val mongoDb: EnvErr2T[MongoDbIO, WorkflowExecutor[MongoDbIO, BsonCursor]] = {
+  val mongoDb: EnvErrT[MongoDbIO, WorkflowExecutor[MongoDbIO, BsonCursor]] = {
     import MongoDbIOWorkflowExecutor._
-    import EnvironmentError2._
+    import EnvironmentError._
 
     type E[A, B] = EitherT[MongoDbIO, A, B]
-    type M[A]    = EnvErr2T[MongoDbIO, A]
+    type M[A]    = EnvErrT[MongoDbIO, A]
     type WFExec  = WorkflowExecutor[MongoDbIO, BsonCursor]
 
     liftEnvErr(MongoDbIO.serverVersion) flatMap { v =>

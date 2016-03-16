@@ -17,10 +17,10 @@
 package quasar.std
 
 import quasar.Predef._
-import quasar.{Data, Func, LogicalPlan, Type, Mapping, SemanticError}, LogicalPlan._
+import quasar.{Data, Func, LogicalPlan, Type, Mapping}, LogicalPlan._
 
 import matryoshka._
-import scalaz._, Scalaz._, NonEmptyList.nel, Validation.{success, failure}
+import scalaz._, Scalaz._, Validation.success
 
 // TODO: Cleanup!
 trait RelationsLib extends Library {
@@ -35,7 +35,7 @@ trait RelationsLib extends Library {
     basicUntyper)
 
   val Neq = Mapping("(<>)", "Determines if two values are not equal",
-    Type.Bool, Type.Comparable :: Type.Comparable :: Nil,
+    Type.Bool, Type.Top :: Type.Top :: Nil,
     noSimplification,
     partialTyper {
       case Type.Const(data1) :: Type.Const(data2) :: Nil => Type.Const(Data.Bool(data1 != data2))

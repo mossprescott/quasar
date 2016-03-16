@@ -180,7 +180,7 @@ class HierarchicalFileSystemSpec extends mutable.Specification with FileSystemFi
 
         "containing no paths succeeds" >> {
           val out = mntC </> file("outfile")
-          runMntd(query.execute(Constant(Data.Obj(Map("0" -> Data.Int(3)))), out).run.value)
+          runMntd(query.execute(Constant(Data.Obj(ListMap("0" -> Data.Int(3)))), out).run.value)
             .run.eval(emptyMS) must_== out.right.right
         }
       }

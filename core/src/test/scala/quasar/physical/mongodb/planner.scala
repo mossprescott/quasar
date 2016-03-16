@@ -121,23 +121,19 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
             IgnoreId)))
     }
 
-    // TODO: currently, Data.Obj doesn’t maintain order. The result here will
-    //       change once it does.
     "select complex constant" in {
       plan("select {\"a\": 1, \"b\": 2, \"c\": 3, \"d\": 4, \"e\": 5}{*} limit 3 offset 1") must
         beWorkflow($pure(Bson.Arr(List(
-          Bson.Doc(ListMap("0" -> Bson.Int64(1))),
-          Bson.Doc(ListMap("0" -> Bson.Int64(2)))))))
+          Bson.Doc(ListMap("0" -> Bson.Int64(2))),
+          Bson.Doc(ListMap("0" -> Bson.Int64(3)))))))
 
     }
 
-    // TODO: currently, Data.Obj doesn’t maintain order. The result here will
-    //       change once it does.
     "select complex constant 2" in {
       plan("select {\"a\": 1, \"b\": 2, \"c\": 3, \"d\": 4, \"e\": 5}{*:} limit 3 offset 1") must
       beWorkflow($pure(Bson.Arr(List(
-        Bson.Doc(ListMap("0" -> Bson.Text("a"))),
-        Bson.Doc(ListMap("0" -> Bson.Text("b")))))))
+        Bson.Doc(ListMap("0" -> Bson.Text("b"))),
+        Bson.Doc(ListMap("0" -> Bson.Text("c")))))))
 
     }
 
@@ -850,25 +846,10 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
                  Selector.Doc(BsonField.Name("baz") ->
                    Selector.Type(BsonType.Bool)))),
              Selector.And(
-               Selector.Or(
-                 Selector.Doc(BsonField.Name("bar") ->
-                   Selector.Type(BsonType.Int32)),
-                 Selector.Doc(BsonField.Name("bar") ->
-                   Selector.Type(BsonType.Int64)),
-                 Selector.Doc(BsonField.Name("bar") ->
-                   Selector.Type(BsonType.Dec)),
-                 Selector.Doc(BsonField.Name("bar") ->
-                   Selector.Type(BsonType.Text)),
-                 Selector.Or(
-                   Selector.Doc(BsonField.Name("bar") ->
-                     Selector.Type(BsonType.Date)),
-                   Selector.Doc(BsonField.Name("bar") ->
-                     Selector.Type(BsonType.Bool)))),
-               Selector.And(
-                 Selector.Doc(BsonField.Name("bar") ->
-                   Selector.Neq(Bson.Int64(-10))),
-                 Selector.Doc(BsonField.Name("baz") ->
-                   Selector.Gt(Bson.Dec(-1.0)))))))))
+               Selector.Doc(BsonField.Name("bar") ->
+                 Selector.Neq(Bson.Int64(-10))),
+               Selector.Doc(BsonField.Name("baz") ->
+                 Selector.Gt(Bson.Dec(-1.0))))))))
     }
 
     "plan complex filter" in {
@@ -1043,43 +1024,14 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
         $read(Collection("db", "zips")),
         $project(
           reshape(
-            "__tmp4" -> $neq($field("city"), $field("state")),
-            "__tmp5" -> $$ROOT),
+            "__tmp0" -> $neq($field("city"), $field("state")),
+            "__tmp1" -> $$ROOT),
           IgnoreId),
-        $match(Selector.And(
-          Selector.Or(
-            Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("state") ->
-              Selector.Type(BsonType.Int32)),
-            Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("state") ->
-              Selector.Type(BsonType.Int64)),
-            Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("state") ->
-              Selector.Type(BsonType.Dec)),
-            Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("state") ->
-              Selector.Type(BsonType.Text)),
-            Selector.Or(
-              Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("state") ->
-                Selector.Type(BsonType.Date)),
-              Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("state") ->
-                Selector.Type(BsonType.Bool)))),
-          Selector.And(
-            Selector.Or(
-              Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("city") ->
-                Selector.Type(BsonType.Int32)),
-              Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("city") ->
-                Selector.Type(BsonType.Int64)),
-              Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("city") ->
-                Selector.Type(BsonType.Dec)),
-              Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("city") ->
-                Selector.Type(BsonType.Text)),
-              Selector.Or(
-                Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("city") ->
-                  Selector.Type(BsonType.Date)),
-                Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("city") ->
-                  Selector.Type(BsonType.Bool)))),
-            Selector.Doc(
-              BsonField.Name("__tmp4") -> Selector.Eq(Bson.Bool(true)))))),
+        $match(
+          Selector.Doc(
+            BsonField.Name("__tmp0") -> Selector.Eq(Bson.Bool(true)))),
         $project(
-          reshape("value" -> $field("__tmp5")),
+          reshape("value" -> $field("__tmp1")),
           ExcludeId)))
     }
 
@@ -1089,61 +1041,32 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
         $read(Collection("db", "zips")),
         $project(
           reshape(
-            "__tmp8" -> $neq($field("city"), $field("state")),
-            "__tmp9" -> $$ROOT,
-            "__tmp10" -> $field("pop")),
+            "__tmp4" -> $neq($field("city"), $field("state")),
+            "__tmp5" -> $$ROOT,
+            "__tmp6" -> $field("pop")),
           IgnoreId),
         $match(Selector.And(
           Selector.Or(
-            Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("pop") ->
+            Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("pop") ->
               Selector.Type(BsonType.Int32)),
-            Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("pop") ->
+            Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("pop") ->
               Selector.Type(BsonType.Int64)),
-            Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("pop") ->
+            Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("pop") ->
               Selector.Type(BsonType.Dec)),
-            Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("pop") ->
+            Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("pop") ->
               Selector.Type(BsonType.Text)),
             Selector.Or(
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("pop") ->
+              Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("pop") ->
                 Selector.Type(BsonType.Date)),
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("pop") ->
+              Selector.Doc(BsonField.Name("__tmp5") \ BsonField.Name("pop") ->
                 Selector.Type(BsonType.Bool)))),
           Selector.And(
-            Selector.Or(
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("state") ->
-                Selector.Type(BsonType.Int32)),
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("state") ->
-                Selector.Type(BsonType.Int64)),
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("state") ->
-                Selector.Type(BsonType.Dec)),
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("state") ->
-                Selector.Type(BsonType.Text)),
-              Selector.Or(
-                Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("state") ->
-                  Selector.Type(BsonType.Date)),
-                Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("state") ->
-                  Selector.Type(BsonType.Bool)))),
-            Selector.And(Selector.Or(
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("city") ->
-                Selector.Type(BsonType.Int32)),
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("city") ->
-                Selector.Type(BsonType.Int64)),
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("city") ->
-                Selector.Type(BsonType.Dec)),
-              Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("city") ->
-                Selector.Type(BsonType.Text)),
-              Selector.Or(
-                Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("city") ->
-                  Selector.Type(BsonType.Date)),
-                Selector.Doc(BsonField.Name("__tmp9") \ BsonField.Name("city") ->
-                  Selector.Type(BsonType.Bool)))),
-              Selector.And(
-                Selector.Doc(
-                  BsonField.Name("__tmp8") -> Selector.Eq(Bson.Bool(true))),
-                Selector.Doc(
-                  BsonField.Name("__tmp10") -> Selector.Lt(Bson.Int64(10000)))))))),
+            Selector.Doc(
+              BsonField.Name("__tmp4") -> Selector.Eq(Bson.Bool(true))),
+            Selector.Doc(
+              BsonField.Name("__tmp6") -> Selector.Lt(Bson.Int64(10000)))))),
         $project(
-          reshape("value" -> $field("__tmp9")),
+          reshape("value" -> $field("__tmp5")),
           ExcludeId)))
     }
 
@@ -2794,31 +2717,16 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
                     Selector.Doc(BsonField.Name("ts") ->
                       Selector.Type(BsonType.Bool)))),
                 Selector.And(
-                  Selector.Or(
-                    Selector.Doc(BsonField.Name("ts") ->
-                      Selector.Type(BsonType.Int32)),
-                    Selector.Doc(BsonField.Name("ts") ->
-                      Selector.Type(BsonType.Int64)),
-                    Selector.Doc(BsonField.Name("ts") ->
-                      Selector.Type(BsonType.Dec)),
-                    Selector.Doc(BsonField.Name("ts") ->
-                      Selector.Type(BsonType.Text)),
-                    Selector.Or(
-                      Selector.Doc(BsonField.Name("ts") ->
-                        Selector.Type(BsonType.Date)),
-                      Selector.Doc(BsonField.Name("ts") ->
-                        Selector.Type(BsonType.Bool)))),
                   Selector.And(
-                    Selector.And(
-                      Selector.Doc(
-                        BsonField.Name("ts") -> Selector.Gte(Bson.Date(Instant.parse("2015-01-23T00:00:00Z")))),
-                      Selector.Doc(
-                        BsonField.Name("ts") -> Selector.Lt(Bson.Date(Instant.parse("2015-01-28T00:00:00Z"))))),
-                    Selector.Or(
-                      Selector.Doc(
-                        BsonField.Name("ts") -> Selector.Lt(Bson.Date(Instant.parse("2015-01-25T00:00:00Z")))),
-                      Selector.Doc(
-                        BsonField.Name("ts") -> Selector.Gte(Bson.Date(Instant.parse("2015-01-26T00:00:00Z"))))))))),
+                    Selector.Doc(
+                      BsonField.Name("ts") -> Selector.Gte(Bson.Date(Instant.parse("2015-01-23T00:00:00Z")))),
+                    Selector.Doc(
+                      BsonField.Name("ts") -> Selector.Lt(Bson.Date(Instant.parse("2015-01-28T00:00:00Z"))))),
+                  Selector.Or(
+                    Selector.Doc(
+                      BsonField.Name("ts") -> Selector.Lt(Bson.Date(Instant.parse("2015-01-25T00:00:00Z")))),
+                    Selector.Doc(
+                      BsonField.Name("ts") -> Selector.Gte(Bson.Date(Instant.parse("2015-01-26T00:00:00Z")))))))),
             Selector.And(
               Selector.Doc(
                 BsonField.Name("ts") -> Selector.Gte(Bson.Date(Instant.parse("2015-01-29T00:00:00Z")))),
@@ -2874,7 +2782,6 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
     }
 
     "plan convert to timestamp in map-reduce" in {
-      import org.threeten.bp.Instant
 
       plan("select length(name), to_timestamp(epoch) from foo") must beWorkflow {
         chain(
@@ -3329,16 +3236,20 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
       wf.foldMap(op => if (p.lift(op.unFix).getOrElse(false)) 1 else 0)
     }
 
+    def countAccumOps(wf: Workflow) = countOps(wf, { case $Group(_, _, _) => true })
+    def countUnwindOps(wf: Workflow) = countOps(wf, { case $Unwind(_, _) => true })
+    def countMatchOps(wf: Workflow) = countOps(wf, { case $Match(_, _) => true })
+
     def noConsecutiveProjectOps(wf: Workflow) =
       countOps(wf, { case $Project(Fix($Project(_, _, _)), _, _) => true }) aka "the occurrences of consecutive $project ops:" must_== 0
     def noConsecutiveSimpleMapOps(wf: Workflow) =
       countOps(wf, { case $SimpleMap(Fix($SimpleMap(_, _, _)), _, _) => true }) aka "the occurrences of consecutive $simpleMap ops:" must_== 0
     def maxAccumOps(wf: Workflow, max: Int) =
-      countOps(wf, { case $Group(_, _, _) => true }) aka "the number of $group ops:" must beLessThanOrEqualTo(max)
+      countAccumOps(wf) aka "the number of $group ops:" must beLessThanOrEqualTo(max)
     def maxUnwindOps(wf: Workflow, max: Int) =
-      countOps(wf, { case $Unwind(_, _) => true }) aka "the number of $unwind ops:" must beLessThanOrEqualTo(max)
+      countUnwindOps(wf) aka "the number of $unwind ops:" must beLessThanOrEqualTo(max)
     def maxMatchOps(wf: Workflow, max: Int) =
-      countOps(wf, { case $Match(_, _) => true }) aka "the number of $match ops:" must beLessThanOrEqualTo(max)
+      countMatchOps(wf) aka "the number of $match ops:" must beLessThanOrEqualTo(max)
     def brokenProjectOps(wf: Workflow) =
       countOps(wf, { case $Project(_, Reshape(shape), _) => shape.isEmpty }) aka "$project ops with no fields"
 
@@ -3387,6 +3298,24 @@ class PlannerSpec extends Specification with ScalaCheck with CompilerHelpers wit
         rootPushes(wf) must_== Nil
       }
     }.set(maxSize = 3)  // FIXME: with more then a few keys in the order by, the planner gets *very* slow (see SD-658)
+
+    "SD-1263 specific case of plan multiple reducing projections (all, distinct, orderBy)" in {
+      val q = Query(
+        "select distinct loc || [pop - 1] as p1, pop - 1 as p2 from zips group by territory order by p2")
+
+      plan(q.value) must beRight.which { fop =>
+        val wf = fop.op
+        noConsecutiveProjectOps(wf)
+        noConsecutiveSimpleMapOps(wf)
+        countAccumOps(wf) must_== 1
+        countUnwindOps(wf) must_== 0
+        countMatchOps(wf) must_== 0
+        danglingReferences(wf) must_== Nil
+        brokenProjectOps(wf) must_== 0
+        appropriateColumns(wf, q)
+        rootPushes(wf) must_== Nil
+      }
+    }
 
     "plan multiple reducing projections (all, distinct)" ! Prop.forAll(select(distinct, maybeReducingExpr, Gen.option(filter), Gen.option(groupBySeveral), noOrderBy)) { q =>
       plan(q.value) must beRight.which { fop =>

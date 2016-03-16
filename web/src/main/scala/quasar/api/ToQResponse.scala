@@ -17,7 +17,7 @@
 package quasar.api
 
 import quasar.Predef._
-import quasar.{EnvironmentError2, Planner, SemanticErrors}
+import quasar.{EnvironmentError, Planner, SemanticErrors}
 import quasar.fs._
 import quasar.fs.mount.{Mounting, MountingError}
 import quasar.fs.mount.hierarchical.HierarchicalFileSystemError
@@ -26,11 +26,11 @@ import quasar.physical.mongodb.WorkflowExecutionError
 import quasar.sql.ParsingError
 
 import argonaut._, Argonaut._
+import com.mongodb.MongoException
 import org.http4s._, Status._
 import pathy.Path._
 import scalaz._, syntax.show._
 import scalaz.concurrent.Task
-import simulacrum.typeclass
 
 trait ToQResponse[A, S[_]] {
   def toResponse(v: A): QResponse[S]
@@ -58,7 +58,7 @@ sealed abstract class ToQResponseInstances extends ToQResponseInstances0 {
     : ToQResponse[A \/ B, S] =
       response(_.fold(ev1.toResponse, ev2.toResponse))
 
-  implicit def environmentErrorQResponse[S[_]]: ToQResponse[EnvironmentError2, S] =
+  implicit def environmentErrorQResponse[S[_]]: ToQResponse[EnvironmentError, S] =
     response(ee => QResponse.error(InternalServerError, ee.shows))
 
   implicit def fileSystemErrorResponse[S[_]]: ToQResponse[FileSystemError, S] = {
@@ -88,11 +88,11 @@ sealed abstract class ToQResponseInstances extends ToQResponseInstances0 {
     import MountingError._, PathError2.InvalidPath
 
     response {
-      case PathError(InvalidPath(p, rsn)) =>
+      case PError(InvalidPath(p, rsn)) =>
         QResponse.error(Conflict, s"cannot mount at ${posixCodec.printPath(p)} because $rsn")
 
-      case PathError(e)             => e.toResponse
-      case EnvironmentError(e)      => e.toResponse
+      case PError(e)                => e.toResponse
+      case EError(e)                => e.toResponse
       case InvalidConfig(cfg, rsns) => QResponse.error(BadRequest, rsns.list.mkString("; "))
     }
   }
@@ -145,14 +145,14 @@ sealed abstract class ToQResponseInstances extends ToQResponseInstances0 {
   implicit def qResponseToQResponse[S[_]]: ToQResponse[QResponse[S], S] =
     response(ι)
 
-  implicit def http4sResponseToQResponse[S[_]:Functor](implicit ev: Task :<: S): ToQResponse[Response, S] =
+  implicit def http4sResponseToQResponse[S[_]: Functor](implicit ev: Task :<: S): ToQResponse[Response, S] =
     response(r =>
       QResponse(
         status = r.status,
         headers = r.headers,
-        body = r.body.translate[Free[S,?]](injectFT[Task,S])))
+        body = r.body.translate[Free[S, ?]](injectFT[Task, S])))
 
-  implicit def decodeFailureToQResponse[S[_]]: ToQResponse[DecodeFailure,S] =
+  implicit def decodeFailureToQResponse[S[_]]: ToQResponse[DecodeFailure, S] =
     response{
       case MediaTypeMissing(expectedMediaTypes) =>
         val expected = expectedMediaTypes.map(_.renderString).mkString(", ")
@@ -172,6 +172,9 @@ sealed abstract class ToQResponseInstances extends ToQResponseInstances0 {
       case other =>
         QResponse.error(BadRequest, other.msg)
     }
+
+  implicit def mongoExceptionToQResponse[S[_]]: ToQResponse[MongoException, S] =
+    response(merr => QResponse.error(InternalServerError, s"MongoDB Error: ${merr.getMessage}"))
 
   implicit def stringQResponse[S[_]]: ToQResponse[String, S] =
     response(QResponse.string(Ok, _))

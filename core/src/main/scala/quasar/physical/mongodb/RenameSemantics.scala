@@ -14,18 +14,11 @@
  * limitations under the License.
  */
 
-package quasar.fp.numeric
+package quasar.physical.mongodb
 
-import eu.timepit.refined.scalacheck.numeric.Bounded
-import org.scalacheck.Gen
-import org.scalacheck.Gen.Choose
+sealed trait RenameSemantics
 
-object SafeIntForVectorArbitrary {
-  implicit val chooseSafeIntForVector: Choose[SafeIntForVector] = new Choose[SafeIntForVector] {
-    def choose(low: SafeIntForVector, high: SafeIntForVector) =
-      Gen.choose(low.value, high.value).map(SafeIntForVector.unsafe)
-  }
-
-  implicit val SafeIntForVectorBounded: Bounded[SafeIntForVector] =
-    Bounded(SafeIntForVector.unsafe(SafeIntForVector.minValue), SafeIntForVector.unsafe(SafeIntForVector.maxValue))
+object RenameSemantics {
+  case object Overwrite extends RenameSemantics
+  case object FailIfExists extends RenameSemantics
 }

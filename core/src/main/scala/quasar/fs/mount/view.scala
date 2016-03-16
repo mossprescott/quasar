@@ -25,8 +25,6 @@ import quasar.fs._, FileSystemError._, PathError2._
 import quasar.std.StdLib._, set._
 
 import matryoshka._
-import monocle.Optional
-import monocle.function.Field1
 import pathy.{Path => PPath}, PPath._
 import scalaz._, Scalaz._
 
@@ -189,7 +187,10 @@ object view {
           })
 
         case FileExists(file) =>
-          query.fileExists(file).map(_ || views.contains(file)).run
+          if (views.contains(file))
+            true.point[Free[S, ?]]
+          else
+            query.fileExists(file)
       }
     }
   }

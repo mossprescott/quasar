@@ -17,7 +17,7 @@
 package quasar.physical.mongodb
 
 import quasar.Predef._
-import quasar.{EnvironmentError2, EnvErr2T, EnvErr, EnvErrF}
+import quasar.{EnvironmentError, EnvErrT, EnvErr, EnvErrF}
 import quasar.{NameGenerator => NG}
 import quasar.config._
 import quasar.effect.Failure
@@ -50,53 +50,35 @@ package object fs {
 
   final case class TmpPrefix(run: String) extends scala.AnyVal
 
-  def mongoDbFileSystem(
-    client: MongoClient,
-    defDb: Option[DefaultDb]
-  ): EnvErr2T[Task, FileSystem ~> WFTask] = {
-    val liftWF = liftMT[Task, WorkflowExecErrT]
-    val runM = Hoist[EnvErr2T].hoist(MongoDbIO.runNT(client))
-
-    (
-      runM(WorkflowExecutor.mongoDb)                 |@|
-      queryfile.run[BsonCursor](client, defDb)
-        .liftM[EnvErr2T]                             |@|
-      readfile.run(client).liftM[EnvErr2T]           |@|
-      writefile.run(client).liftM[EnvErr2T]          |@|
-      managefile.run(client).liftM[EnvErr2T]
-    )((execMongo, qfile, rfile, wfile, mfile) =>
-      interpretFileSystem[WFTask](
-        qfile compose queryfile.interpret(execMongo),
-        liftWF compose rfile compose readfile.interpret,
-        liftWF compose wfile compose writefile.interpret,
-        liftWF compose mfile compose managefile.interpret))
-  }
-
-  /** TODO: Refactor MongoDB interpreters to interpret into these (and other) effects. */
-  def mongoDbFileSystemF[S[_]: Functor](
+  def mongoDbFileSystem[S[_]: Functor](
     client: MongoClient,
     defDb: Option[DefaultDb]
   )(implicit
     S0: Task :<: S,
-    S1: WorkflowExecErrF :<: S
-  ): EnvErr2T[Task, FileSystem ~> Free[S, ?]] = {
-    type M[A] = Free[S, A]
+    S1: MongoErrF :<: S,
+    S2: WorkflowExecErrF :<: S
+  ): EnvErrT[Task, FileSystem ~> Free[S, ?]] = {
+    val runM = Hoist[EnvErrT].hoist(MongoDbIO.runNT(client))
 
-    val wfeErr = Failure.Ops[WorkflowExecutionError, S]
-    def liftT[A](ta: Task[A]): M[A] = free.lift(ta).into[S]
-
-    val toS: WFTask ~> M =
-      new (WFTask ~> M) {
-        def apply[A](wf: WFTask[A]) =
-          liftT(wf.run).flatMap(_.fold(wfeErr.fail, _.point[M]))
-      }
-
-    mongoDbFileSystem(client, defDb) map (toS compose _)
+    (
+      runM(WorkflowExecutor.mongoDb)                 |@|
+      queryfile.run[BsonCursor, S](client, defDb)
+        .liftM[EnvErrT]                             |@|
+      readfile.run[S](client).liftM[EnvErrT]        |@|
+      writefile.run[S](client).liftM[EnvErrT]       |@|
+      managefile.run[S](client).liftM[EnvErrT]
+    )((execMongo, qfile, rfile, wfile, mfile) =>
+      interpretFileSystem[Free[S, ?]](
+        qfile compose queryfile.interpret(execMongo),
+        rfile compose readfile.interpret,
+        wfile compose writefile.interpret,
+        mfile compose managefile.interpret))
   }
 
-  def mongoDbFileSystemDef[S[_]: Functor](
-    implicit S0: Task :<: S,
-             S1: WorkflowExecErrF :<: S
+  def mongoDbFileSystemDef[S[_]: Functor](implicit
+    S0: Task :<: S,
+    S1: MongoErrF :<: S,
+    S2: WorkflowExecErrF :<: S
   ): FileSystemDef[Free[S, ?]] = FileSystemDef.fromPF[Free[S, ?]] {
     case (MongoDBFsType, uri) =>
       type M[A] = Free[S, A]
@@ -104,7 +86,7 @@ package object fs {
         client <- asyncClientDef[S](uri)
         defDb  <- free.lift(findDefaultDb.run(client)).into[S].liftM[DefErrT]
         fs     <- EitherT[M, DefinitionError, FileSystem ~> M](free.lift(
-                    mongoDbFileSystemF[S](client, defDb)
+                    mongoDbFileSystem[S](client, defDb)
                       .leftMap(_.right[NonEmptyList[String]])
                       .run
                   ).into[S])
@@ -138,12 +120,12 @@ package object fs {
 
     val evalEnvErr: EnvErrF ~> DefM =
       Coyoneda.liftTF[EnvErr, DefM](
-        convertError[M]((_: EnvironmentError2).right[NonEmptyList[String]])
-          .compose[EnvErr](Failure.toError[ME, EnvironmentError2]))
+        convertError[M]((_: EnvironmentError).right[NonEmptyList[String]])
+          .compose[EnvErr](Failure.toError[ME, EnvironmentError]))
 
     val evalCfgErr: CfgErrF ~> DefM =
       Coyoneda.liftTF[CfgErr, DefM](
-        convertError[M]((_: ConfigError).shows.wrapNel.left[EnvironmentError2])
+        convertError[M]((_: ConfigError).shows.wrapNel.left[EnvironmentError])
           .compose[CfgErr](Failure.toError[ME, ConfigError]))
 
     val liftTask: Task ~> DefM =

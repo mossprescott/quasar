@@ -25,7 +25,6 @@ import quasar.fs.mount._
 
 import org.http4s._, Method.MOVE
 import org.http4s.dsl._
-import org.http4s.util.CaseInsensitiveString
 import org.http4s.headers._
 import org.specs2.mutable.Specification
 import scalaz.{Failure => _, _}
@@ -44,7 +43,7 @@ class RestApiSpecs extends Specification {
     val fs = runFs(InMemState.empty).map(interpretMountingFileSystem(mount, _)).run
     val eff = free.interpret3[Task, FileSystemFailureF, MountingFileSystem, Task](
       NaturalTransformation.refl,
-      Coyoneda.liftTF[FileSystemFailure, Task](Failure.toTaskFailure[FileSystemError]),
+      Coyoneda.liftTF[FileSystemFailure, Task](Failure.toRuntimeError[FileSystemError]),
       fs)
     val service = RestApi.finalizeServices[Eff](
       liftMT[Task, ResponseT].compose[Eff](eff))(

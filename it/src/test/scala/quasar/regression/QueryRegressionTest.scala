@@ -18,10 +18,10 @@ package quasar.regression
 
 import quasar._
 import quasar.Predef._
-import quasar.config._
 import quasar.fp._
 import quasar.fs.{Path => QPath, _}
-import quasar.fs.mount.{Mounts, hierarchical}
+import quasar.fs.mount.{MountConfig, Mounts, hierarchical}
+import quasar.physical.mongodb.fs.MongoDBFsType
 import quasar.sql._
 
 import java.io.{File, FileInputStream}
@@ -63,7 +63,7 @@ abstract class QueryRegressionTest[S[_]: Functor](
   val write  = WriteFile.Ops[S]
   val manage = ManageFile.Ops[S]
 
-  /** A name to idetify the suite in test output. */
+  /** A name to identify the suite in test output. */
   def suiteName: String
 
   /** Return the results of evaluating the given query as a stream. */
@@ -73,15 +73,15 @@ abstract class QueryRegressionTest[S[_]: Functor](
 
   lazy val tests = regressionTests(TestsRoot, knownFileSystems).run
 
-  fileSystemShould { name => implicit run =>
+  fileSystemShould { fs =>
     suiteName should {
-      step(prepareTestData(tests, run).run)
+      step(prepareTestData(tests, fs.setupInterpM).run)
 
       tests.toList foreach { case (f, t) =>
-        regressionExample(f, t, name, run)
+        regressionExample(f, t, fs.name, fs.testInterpM)
       }
 
-      step(runT(run)(manage.delete(DataDir)).runVoid)
+      step(runT(fs.setupInterpM)(manage.delete(DataDir)).runVoid)
     }; ()
   }
 
@@ -112,7 +112,7 @@ abstract class QueryRegressionTest[S[_]: Functor](
 
   /** Verify that the given data file exists in the filesystem. */
   def verifyDataExists(dataFileName: String): F[Result] =
-    query.fileExists(dataFile(dataFileName)).run map (_ ==== true.right)
+    query.fileExists(dataFile(dataFileName)) map (_ ==== true)
 
   /** Verify the given results according to the provided expectation. */
   def verifyResults(
@@ -220,7 +220,7 @@ abstract class QueryRegressionTest[S[_]: Functor](
   def loadRegressionTest: File => Task[RegressionTest] =
     file => textContents(file) flatMap { text =>
       decodeJson[RegressionTest](text) fold (
-        err => Task.fail(new RuntimeException(err)),
+        err => Task.fail(new RuntimeException(file.getName + ": " + err)),
         Task.now(_))
     }
 
@@ -248,16 +248,16 @@ object QueryRegressionTest {
 
   def externalFS: Task[IList[FileSystemUT[FileSystemIO]]] = {
     val extFs = TestConfig.externalFileSystems {
-      case (MongoDbConfig(cs), dir) =>
-        lazy val f = mongofs.testFileSystemIO(cs, dir).run
+      case (MountConfig.FileSystemConfig(MongoDBFsType, uri), dir) =>
+        lazy val f = mongofs.testFileSystemIO(uri, dir).run
         Task.delay(f)
     }
 
     for {
       uts    <- extFs
       mntDir =  rootDir </> dir("hfs-mnt")
-      hfsUts <- uts.traverse(ut => hierarchicalFSIO(mntDir, ut.run) map { f =>
-                  ut.copy(run = f).contramap(chroot.fileSystem[FileSystemIO](ut.testDir))
+      hfsUts <- uts.traverse(ut => hierarchicalFSIO(mntDir, ut.testInterp) map { f =>
+                  ut.copy(testInterp = f).contramap(chroot.fileSystem[FileSystemIO](ut.testDir))
                 })
     } yield hfsUts
   }

@@ -17,13 +17,11 @@
 package quasar
 
 import quasar.Predef._
-import quasar.sql.SQLParser
 import quasar.std._
 import quasar.specs2.PendingWithAccurateCoverage
 
 import matryoshka.Fix
 import org.specs2.mutable._
-import org.specs2.matcher.{Matcher, Expectable}
 import org.specs2.scalaz._
 
 class CompilerSpec extends Specification with CompilerHelpers with PendingWithAccurateCoverage with DisjunctionMatchers {
@@ -1273,6 +1271,16 @@ class CompilerSpec extends Specification with CompilerHelpers with PendingWithAc
                       Free('age))),
                   Constant(Data.Str("name")))))))
     }
+  }
+
+  "error when too few arguments passed to a function" in {
+    fullCompile("""select substring("foo") from zips""")
+      .toEither must beLeft(contain("3,1"))
+  }
+
+  "error when too many arguments passed to a function" in {
+    fullCompile("select count(*, 1, 2, 4) from zips")
+      .toEither must beLeft(contain("1,4"))
   }
 
   "reduceGroupKeys" should {

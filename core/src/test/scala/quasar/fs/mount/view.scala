@@ -18,7 +18,7 @@ package quasar.fs.mount
 
 import quasar.Predef._
 
-import quasar._, LogicalPlan.{Free => LPFree, _}
+import quasar._, LogicalPlan._
 import quasar.effect._
 import quasar.fp._
 import quasar.fs._
@@ -341,30 +341,24 @@ class ViewFSSpec extends Specification with ScalaCheck with TreeMatchers {
 
   "QueryFile.fileExists" should {
     "behave as underlying interpreter" ! prop { file: AFile =>
-      val program = query.fileExists(file).run
+      val program = query.fileExists(file)
 
       val ops = traceInterp(program, Map())._1
 
       val hasFile = {
         val paths = Map(fileParent(file) -> Set(fileName(file).right[DirName]))
-        val expected = (ops, true.right)
-        viewInterp(Views.empty, paths, program) must_== expected
+        viewInterp(Views.empty, paths, program) must_==((ops, true))
       }
       val noFile = {
-        val expected = (ops, false.right)
-        viewInterp(Views.empty, Map(), program) must_== expected
+        viewInterp(Views.empty, Map(), program) must_==((ops, false))
       }
       hasFile and noFile
     }
 
     "return true if there is a view at that path" ! prop { (file: AFile, lp: Fix[LogicalPlan]) =>
-      val program = query.fileExists(file).run
+      val program = query.fileExists(file)
 
-      val ops = traceInterp(program, Map())._1
-
-      val expected = (ops, true.right)
-
-      viewInterp(Views(Map(file -> lp)), Map(), program) must_== expected
+      viewInterp(Views(Map(file -> lp)), Map(), program) must_==((Vector(), true))
     }
   }
 }

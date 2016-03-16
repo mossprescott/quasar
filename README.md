@@ -64,7 +64,7 @@ both MongoDB versions 2.6, 3.0, and 3.2. Alternatively, you can choose to instal
 tests against only that one database. Simply omit a version in order to avoid testing against it. On the integration
 server, the tests are run against all supported versions of MongoDB, as well as read-only configurations.
 
-#### REPL Jar
+#### REPL JAR
 
 To build a JAR for the REPL, which allows entering commands at a command-line prompt, execute the following command:
 
@@ -137,6 +137,14 @@ For example, say a MongoDB instance is running on the default port on the same m
 Then the filesystem will contain the paths `/local/test/` and `/local/students/cs101`, among others.
 
 A database can be mounted at any directory path, but database mount paths must not be nested inside each other.
+
+To connect to MongoDB using TLS/SSL, specify `?ssl=true` in the connection string, and also provide the following via system properties when launching either JAR (i.e. `java -Djavax.net.ssl.trustStore=/home/quasar/ssl/certs.ts`):
+- `javax.net.ssl.trustStore`: path specifying a file containing the certificate chain for verifying the server.
+- `javax.net.ssl.trustStorePassword`: password for the trust store.
+- `javax.net.ssl.keyStore`: path specifying a file containing the client's private key.
+- `javax.net.ssl.keyStorePassword`: password for the key store.
+- `javax.net.debug`: (optional) use `all` for very verbose but sometimes helpful output.
+- `invalidHostNameAllowed`: (optional) use `true` to disable host name checking, which is less secure but may be needed in test environments using self-signed certificates.
 
 #### View mounts
 

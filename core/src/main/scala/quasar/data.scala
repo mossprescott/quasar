@@ -71,7 +71,7 @@ object Data {
     def toJs = jscore.Literal(Js.Num(value.doubleValue, false))
   }
 
-  final case class Obj(value: Map[String, Data]) extends Data {
+  final case class Obj(value: ListMap[String, Data]) extends Data {
     def dataType = Type.Obj(value ∘ (Type.Const(_)), None)
     def toJs =
       jscore.Obj(value.toList.map { case (k, v) => jscore.Name(k) -> v.toJs }.toListMap)

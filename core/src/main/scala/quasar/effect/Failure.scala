@@ -92,6 +92,13 @@ object Failure {
       new Ops[E, S]
   }
 
+  def mapError[D, E](f: D => E): Failure[D, ?] ~> Failure[E, ?] =
+    new (Failure[D, ?] ~> Failure[E, ?]) {
+      def apply[A](fa: Failure[D, A]) = fa match {
+        case Fail(d) => Fail(f(d))
+      }
+    }
+
   def toError[F[_, _], E](implicit F: MonadError[F, E]): Failure[E, ?] ~> F[E, ?] =
     new (Failure[E, ?] ~> F[E, ?]) {
       def apply[A](fa: Failure[E, A]) = fa match {
@@ -99,10 +106,14 @@ object Failure {
       }
     }
 
-  def toTaskFailure[E: Show]: Failure[E, ?] ~> Task =
+  def toRuntimeError[E: Show]: Failure[E, ?] ~> Task =
+    toTaskFailure[RuntimeException]
+      .compose[Failure[E, ?]](mapError(e => new RuntimeException(e.shows)))
+
+  def toTaskFailure[E <: Throwable]: Failure[E, ?] ~> Task =
     new (Failure[E, ?] ~> Task) {
       def apply[A](fa: Failure[E, A]) = fa match {
-        case Fail(e) => Task.fail(new RuntimeException(e.shows))
+        case Fail(e) => Task.fail(e)
       }
     }
 }

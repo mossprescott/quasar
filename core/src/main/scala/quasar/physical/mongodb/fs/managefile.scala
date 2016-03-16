@@ -59,20 +59,22 @@ object managefile {
         EitherT.fromDisjunction[MongoManage](Collection.dbNameFromPath(path))
           .leftMap(pathError(_))
           .flatMap(db => freshName.liftM[FileSystemErrT] map (n =>
-            rootDir[Sandboxed] </> dir(db) </> file(n)))
+            rootDir[Sandboxed] </> dir1(Collection.dirNameFromDbName(db)) </> file(n)))
           .run
     }
   }
 
-  /** Run [[MongoManage]], given a `MongoClient` and the name of a database
-    * to use as a default location for temp collections when no other database
-    * can be deduced.
-    */
-  def run(client: MongoClient): Task[MongoManage ~> Task] =
+  /** Run [[MongoManage]] with the given `MongoClient`. */
+  def run[S[_]: Functor](
+    client: MongoClient
+  )(implicit
+    S0: Task :<: S,
+    S1: MongoErrF :<: S
+  ): Task[MongoManage ~> Free[S, ?]] =
     (tmpPrefix |@| TaskRef(0L)) { (prefix, ref) =>
-      new (MongoManage ~> Task) {
+      new (MongoManage ~> Free[S, ?]) {
         def apply[A](fs: MongoManage[A]) =
-          fs.run((prefix, ref)).run(client)
+          fs.run((prefix, ref)).runF(client)
       }
     }
 
@@ -86,16 +88,24 @@ object managefile {
     case MoveSemantics.FailIfMissing => RenameSemantics.Overwrite
   }
 
-  private def moveDir(src: ADir, dst: ADir, sem: MoveSemantics)
-                     : MongoFsM[Unit] = {
-    for {
-      colls    <- collectionsInDir(src)
+  private def moveDir(src: ADir, dst: ADir, sem: MoveSemantics): MongoFsM[Unit] = {
+    def moveAllUserCollections = for {
+      colls    <- userCollectionsInDir(src)
       srcFiles =  colls map (_.asFile)
       dstFiles =  srcFiles.map(_ relativeTo (src) map (dst </> _)).unite
       _        <- srcFiles zip dstFiles traverseU {
                     case (s, d) => moveFile(s, d, sem)
                   }
     } yield ()
+
+    if (src === dst)
+      ().point[MongoFsM]
+    else if (depth(src) == 1)
+      dbNameFromPathM(src) flatMap { dbName =>
+        moveAllUserCollections *> dropDatabase(dbName).liftM[FileSystemErrT]
+      }
+    else
+      moveAllUserCollections
   }
 
   private def moveFile(src: AFile, dst: AFile, sem: MoveSemantics)
@@ -132,11 +142,11 @@ object managefile {
 
     def ensureDstExists(dstColl: Collection): MongoFsM[Unit] =
       EitherT(collectionsIn(dstColl.databaseName)
-                .filter(_ == dstColl)
+                .filter(_ === dstColl)
                 .runLast
                 .map(_.toRightDisjunction(pathError(pathNotFound(dst))).void))
 
-    if (src == dst)
+    if (src === dst)
       collFromPathM(src) flatMap (srcColl =>
         collectionExists(srcColl).liftM[FileSystemErrT].ifM(
           if (MoveSemantics.failIfExists isMatching sem)
@@ -161,9 +171,9 @@ object managefile {
   // TODO: Really need a Path#fold[A] method, which will be much more reliable
   //       than this process of deduction.
   private def deleteDir(dir: ADir): MongoFsM[Unit] =
-    dirName(dir) match {
+    Collection.dbNameFromPath(dir).toOption match {
       case Some(n) if depth(dir) == 1 =>
-        dropDatabase(n.value).liftM[FileSystemErrT]
+        dropDatabase(n).liftM[FileSystemErrT]
 
       case Some(_) =>
         collectionsInDir(dir)

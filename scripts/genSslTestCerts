@@ -1,0 +1,188 @@
+#! /bin/bash
+
+# Generate certificates and keys for testing SSL locally.
+
+# Requirements:
+# - openssl
+# - keytool, which is bundled with the JDK (Oracle's anyway)
+# For testing:
+# - mongod/mongo with SSL support
+
+### Warning ###
+# These certificates do not provide real security, and should not be used in production!
+# This is only for testing SSL connectivity with a locally-hosted mongod instance.
+
+# See https://docs.mongodb.org/manual/tutorial/configure-ssl/ to get started,
+# but the most accurate and useful resource was this post:
+# http://demarcsek92.blogspot.com/2014/05/mongodb-ssl-setup.html
+
+# Note: CN is set to 127.0.0.1 below, which should in theory allow the host name
+# to be validated, but I was not able to get it to work, so had to turn on all of
+# the security-weakening options to avoid those checks. It's possible it would get
+# further with `localhost` in some places and `127.0.0.1` in others.
+
+# This script overwrites a directory called `./ssl` each time it runs, containing
+# several keys and certificates. After running it, the various components can be
+# launched in this way:
+
+# MongoDB server:
+#
+# > mongod -vv \
+#   --dbpath <data dir> \
+#   --sslMode requireSSL \
+#   --sslPEMKeyFile ssl/server.pem \
+#   --sslCAFile ssl/client.pem \
+#   --sslAllowInvalidCertificates \
+#   --sslAllowConnectionsWithoutCertificates \
+#   --sslWeakCertificateValidation
+#
+# Note: I'm not really sure why client.pem works for the CAFile, when ca.pem does not, but
+# that's the way it worked out.
+
+# MongoDB shell:
+#
+# > mongo 127.0.0.1 --ssl \
+#   --sslPEMKeyFile ssl/client.pem \
+#   --sslCAFile ssl/ca.pem \
+#   --sslAllowInvalidHostnames \
+#   --sslAllowInvalidCertificates
+#
+# Note: here ca.pem seems to work as expected. Go figure.
+
+# Quasar:
+#
+# java \
+#   -Djavax.net.ssl.trustStore=ssl/truststore.jks \
+#   -Djavax.net.ssl.trustStorePassword=password \
+#   -Djavax.net.ssl.keyStore=ssl/keystore.jks \
+#   -Djavax.net.ssl.keyStorePassword=password \
+#   -DinvalidHostNameAllow=true \
+#   -jar <path to repl or web jar>
+
+
+
+
+
+CA_KEY="rootca.key"
+CA_CERT="rootca.crt"
+
+SUB_CA_KEY="ca.key"
+SUB_CA_REQ="ca.csr"
+SUB_CA_CERT="ca.crt"
+SUB_CA_P12="ca.p12"
+
+#
+# For Mongo:
+#
+
+SERVER_KEY="server.key"
+SERVER_REQ="server.csr"
+SERVER_CERT="server.crt"
+
+CA_PEM="ca.pem"
+SERVER_PEM="server.pem"
+CLIENT_PEM="client.pem"
+
+#
+# For Java:
+#
+
+CLIENT_KEY="client.key"
+CLIENT_REQ="client.crs"
+CLIENT_CERT="client.crt"
+
+# This one will contain the CA certificates for authenticating the server:
+TRUST_STORE="truststore.jks"
+
+# This one will contain the client's private key and CA chain:
+KEY_STORE="keystore.jks"
+
+
+rm -r ssl
+mkdir ssl
+cd ssl
+
+set -ex
+
+# See http://blog.didierstevens.com/2008/12/30/howto-make-your-own-cert-with-openssl/
+
+# Root CA Key and Cert:
+openssl genrsa -out "$CA_KEY" 4096
+openssl req -new -x509 -days 365 -nodes -key "$CA_KEY" -out "$CA_CERT" <<EOF
+US
+California
+Redondo Beach
+SlamData
+TEST Root CA
+$USER
+$USER@slamdata.com
+EOF
+
+# Subordinate CA Key and Cert:
+openssl genrsa -out "$SUB_CA_KEY" 4096
+openssl req -new -nodes -key "$SUB_CA_KEY" -out "$SUB_CA_REQ" <<EOF
+US
+California
+Redondo Beach
+SlamData
+TEST CA
+$USER
+$USER@slamdata.com
+
+SlamData
+EOF
+
+# Sign sub-CA cert with root CA's key:
+openssl x509 -req -days 365 -purpose -in "$SUB_CA_REQ" -CA "$CA_CERT" -CAkey "$CA_KEY" -set_serial 01 -out "$SUB_CA_CERT"
+
+# package for MongoDB:
+cat "$CA_CERT" "$SUB_CA_CERT" > "$CA_PEM"
+
+# Server Private Key and Cert:
+openssl genrsa -out "$SERVER_KEY" 4096
+openssl req -new -nodes -key "$SERVER_KEY" -out "$SERVER_REQ" <<EOF
+US
+California
+Redondo Beach
+SlamData
+TEST mongod
+127.0.0.1
+$USER@slamdata.com
+
+SlamData
+EOF
+
+# Sign server cert with CA's key:
+openssl x509 -req -days 365 -purpose -in "$SERVER_REQ" -CA "$SUB_CA_CERT" -CAkey "$SUB_CA_KEY" -set_serial 01 -out "$SERVER_CERT"
+
+# Package for MongoDB:
+cat "$SERVER_KEY" "$SERVER_CERT" > "$SERVER_PEM"
+
+
+# Client Private Key and Cert:
+openssl genrsa -out "$CLIENT_KEY" 4096
+openssl req -new -nodes -key "$CLIENT_KEY" -out "$CLIENT_REQ" <<EOF
+US
+California
+Redondo Beach
+SlamData
+TEST client
+127.0.0.1
+$USER@slamdata.com
+
+SlamData
+EOF
+
+# Sign client cert with CA's key:
+openssl x509 -req -days 365 -purpose -in "$CLIENT_REQ" -CA "$SUB_CA_CERT" -CAkey "$SUB_CA_KEY" -set_serial 01 -out "$CLIENT_CERT"
+
+# Package for MongoDB:
+cat "$CLIENT_KEY" "$CLIENT_CERT" > "$CLIENT_PEM"
+
+
+# Package the CA certs via keytool:
+echo "y" | keytool -import -trustcacerts -alias root -file "$CA_CERT" -keystore "$TRUST_STORE" -storepass password
+keytool -import -trustcacerts -alias SUB -file "$SUB_CA_CERT" -keystore "$TRUST_STORE" -storepass password
+
+# Package the client's key via keytool:
+echo "y" | keytool -import -trustcacerts -alias mongoclient -file "$CLIENT_CERT" -keystore "$KEY_STORE" -storepass password

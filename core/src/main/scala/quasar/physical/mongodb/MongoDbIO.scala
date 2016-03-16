@@ -17,21 +17,21 @@
 package quasar.physical.mongodb
 
 import quasar.Predef._
+import quasar.effect.Failure
 import quasar.fp._
 
 import java.lang.{Boolean => JBoolean}
 import java.util.LinkedList
-import java.util.concurrent.TimeUnit
 import scala.Predef.classOf
 import scala.collection.JavaConverters._
 
-import com.mongodb.{MongoClient => _, _}
+import com.mongodb._
 import com.mongodb.bulk.BulkWriteResult
 import com.mongodb.client.model._
 import com.mongodb.async._
 import com.mongodb.async.client._
 import org.bson.BsonDocument
-import scalaz._, Scalaz._
+import scalaz.{Failure => _, _}, Scalaz._
 import scalaz.concurrent.Task
 import scalaz.stream._
 
@@ -52,7 +52,18 @@ final class MongoDbIO[A] private (protected val r: ReaderT[Task, MongoClient, A]
       case \/-(a)                  => a.right.point[MongoDbIO]
     })
 
-  def run(c: MongoClient): Task[A] = r.run(c)
+  def run(c: MongoClient): Task[A] =
+    r.run(c)
+
+  def runF[S[_]: Functor](
+    c: MongoClient
+  )(implicit
+    S0: Task :<: S,
+    S1: MongoErrF :<: S
+  ): Free[S, A] = {
+    val mongoErr = Failure.Ops[MongoException, S]
+    mongoErr.unattempt(free.lift(attemptMongo.run.run(c)).into[S])
+  }
 }
 
 object MongoDbIO {
@@ -233,7 +244,7 @@ object MongoDbIO {
       case FailIfExists => false
     }
 
-    if (src == dst)
+    if (src === dst)
       ().point[MongoDbIO]
     else
       collection(src)

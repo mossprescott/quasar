@@ -17,15 +17,17 @@
 package quasar.fs
 
 import quasar.Predef._
+import quasar.TestConfig
 import quasar.fp._
 
 import monocle.std.{disjunction => D}
 import pathy.Path._
 import scalaz._, Scalaz._
-import scalaz.concurrent.Task
 import scalaz.stream._
 
-class WriteFilesSpec extends FileSystemTest[FileSystem](FileSystemTest.allFsUT) {
+class WriteFilesSpec extends FileSystemTest[FileSystem](
+  FileSystemTest.allFsUT.map(_.filterNot(fs => TestConfig.isMongoReadOnly(fs.name)))) {
+
   import FileSystemTest._, FileSystemError._
   import WriteFile._
 
@@ -39,9 +41,11 @@ class WriteFilesSpec extends FileSystemTest[FileSystem](FileSystemTest.allFsUT) 
   def deleteForWriting(run: Run): FsTask[Unit] =
     runT(run)(manage.delete(writesPrefix))
 
-  fileSystemShould { _ => implicit run =>
+  fileSystemShould { fs =>
+    implicit val run = fs.testInterpM
+
     "Writing Files" should {
-      step(deleteForWriting(run).runVoid)
+      step(deleteForWriting(fs.setupInterpM).runVoid)
 
       "opening a file should create it" >>* {
         val f = writesPrefix </> dir("opencreates") </> file("f1")
@@ -49,7 +53,7 @@ class WriteFilesSpec extends FileSystemTest[FileSystem](FileSystemTest.allFsUT) 
         val r = for {
           h <- write.unsafe.open(f)
           _ <- write.unsafe.close(h).liftM[FileSystemErrT]
-          p <- query.fileExists(f)
+          p <- query.fileExistsM(f)
         } yield p
 
         r.run map (_.toEither must beRight(true))
@@ -87,7 +91,7 @@ class WriteFilesSpec extends FileSystemTest[FileSystem](FileSystemTest.allFsUT) 
       "append empty input should result in a new file" >> {
         val f = writesPrefix </> file("emptyfile")
         val p = write.append(f, Process.empty).drain ++
-                (query.fileExists(f)).liftM[Process]
+                (query.fileExistsM(f)).liftM[Process]
 
         runLogT(run, p).run.run must_== \/.right(Vector(true))
       }
@@ -106,7 +110,7 @@ class WriteFilesSpec extends FileSystemTest[FileSystem](FileSystemTest.allFsUT) 
           .runEither must beRight(containTheSameElementsAs(List(descendant1, descendant2)))
       }
 
-      step(deleteForWriting(run).runVoid)
+      step(deleteForWriting(fs.setupInterpM).runVoid)
     }; ()
   }
 }

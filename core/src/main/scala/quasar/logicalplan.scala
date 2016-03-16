@@ -23,7 +23,7 @@ import quasar.fs.Path
 import quasar.namegen._
 
 import matryoshka._, Recursive.ops._, FunctorT.ops._
-import scalaz._, Scalaz._, Validation.{success, failure}, Validation.FlatMap._
+import scalaz._, Scalaz._, Validation.success, Validation.FlatMap._
 
 sealed trait LogicalPlan[A]
 object LogicalPlan {
@@ -278,7 +278,13 @@ object LogicalPlan {
       case ConstantF(d)      => success(ConstantF[Typed[LogicalPlan]](d))
       case InvokeF(f, args)  => for {
         types <- f.untype(typ)
-        args0 <- types.zip(args).traverseU((inferTypes(_, _)).tupled)
+        args0 <- types.align(args).traverseU(_.onlyBoth match {
+                   case Some((t, arg)) =>
+                     inferTypes(t, arg).disjunction
+                   case None =>
+                     SemanticError.WrongArgumentCount(f, types.length, args.length)
+                       .wrapNel.left
+                 }).validation
       } yield InvokeF[Typed[LogicalPlan]](f, args0)
       case FreeF(n)          => success(FreeF[Typed[LogicalPlan]](n))
       case LetF(n, form, in) =>
@@ -376,7 +382,7 @@ object LogicalPlan {
           } yield plan
         case InvokeF(structural.FlattenMap, args) => for {
           types <- lift(structural.FlattenMap.apply(args.map(_.inferred)).disjunction)
-          consts <- emitName[SemDisj, List[Fix[LogicalPlan]]](args.map(ensureConstraint(_, Constant(Data.Obj(Map("" -> Data.NA))))).sequenceU)
+          consts <- emitName[SemDisj, List[Fix[LogicalPlan]]](args.map(ensureConstraint(_, Constant(Data.Obj(ListMap("" -> Data.NA))))).sequenceU)
           plan  <- unifyOrCheck(inf, types, Invoke(structural.FlattenMap, consts))
         } yield plan
         case InvokeF(f @ Mapping(_, _, _, _, _, _, _), args) =>
