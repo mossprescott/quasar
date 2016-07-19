@@ -158,6 +158,9 @@ object Workflow {
         case $Unwind(src, field)      => G.apply(f(src))($Unwind(_, field))
         case $Group(src, grouped, by) => G.apply(f(src))($Group(_, grouped, by))
         case $Sort(src, value)        => G.apply(f(src))($Sort(_, value))
+        case $Lookup(src, from, localField, foreignField, as) =>
+          G.apply(f(src))($Lookup(_, from, localField, foreignField, as))
+        case $Sample(src, size)       => G.apply(f(src))($Sample(_, size))
         case $GeoNear(src, near, distanceField, limit, maxDistance, query, spherical, distanceMultiplier, includeLocs, uniqueDocs) =>
           G.apply(f(src))($GeoNear(_, near, distanceField, limit, maxDistance, query, spherical, distanceMultiplier, includeLocs, uniqueDocs))
         case $Out(src, col)           => G.apply(f(src))($Out(_, col))
@@ -1170,6 +1173,37 @@ object Workflow {
   }
   val $reduce = $Reduce.make _
 
+  // Since MongoDB 3.2
+  final case class $Lookup[A](
+    src: A,
+    from: Collection,
+    localField: BsonField.Name,
+    foreignField: BsonField.Name,
+    as: BsonField.Name)
+    extends SingleSourceF[A] {
+
+    def reparent[B](newSrc: B) = copy(src = newSrc)
+  }
+  object $Lookup {
+    def make(
+      from: Collection,
+      localField: BsonField.Name,
+      foreignField: BsonField.Name,
+      as: BsonField.Name)
+      (src: Workflow): Workflow =
+      Fix(coalesce($Lookup(src, from, localField, foreignField, as)))
+  }
+  val $loookup = $Lookup.make _
+
+  // Since MongoDB 3.2
+  final case class $Sample[A](src: A, size: Int) extends SingleSourceF[A] {
+    def reparent[B](newSrc: B) = copy(src = newSrc)
+  }
+  object $Sample {
+    def make(size: Int)(src: Workflow) = $Sample(src, size)
+  }
+  val $sample = $Sample.make _
+
   /**
     Performs a sequence of operations, sequentially, merging their results.
     */
@@ -1182,6 +1216,13 @@ object Workflow {
   }
   def $foldLeft(first: Workflow, second: Workflow, rest: Workflow*) =
     $FoldLeft.make(first, NonEmptyList.nel(second, IList.fromList(rest.toList)))
+
+  val availableSinceƒ: Algebra[WorkflowF, MongoQueryModel] = {
+    case $Lookup(_, _, _, _, _) => MongoQueryModel.`3.2`
+    case $Sample(_, _)          => MongoQueryModel.`3.2`
+
+    case _                      => MongoQueryModel.`2.6`
+  }
 
   implicit val WorkflowFRenderTree: RenderTree[WorkflowF[Unit]] = new RenderTree[WorkflowF[Unit]] {
     val wfType = "Workflow" :: Nil
@@ -1257,6 +1298,9 @@ object Workflow {
           JSRenderTree.render(fn) ::
             Terminal("Scope" :: nt, Some((scope ∘ (_.toJs.pprint(2))).toString)) ::
             Nil)
+      case $Lookup(_, from, localField, foreignField, as) =>
+        Terminal("$Lookup" :: wfType, Some(s"$from with $foreignField = $localField as $as"))
+      case $Sample(_, size) => Terminal("$Sample" :: wfType, Some(size.toString))
       case $Out(_, coll) => coll.render.copy(nodeType = "$Out" :: wfType)
       case $FoldLeft(_, _) => Terminal("$FoldLeft" :: wfType, None)
     }
