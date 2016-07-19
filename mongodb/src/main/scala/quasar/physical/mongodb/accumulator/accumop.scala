@@ -19,8 +19,9 @@ package quasar.physical.mongodb.accumulator
 import quasar.Predef._
 import quasar.RenderTree
 import quasar.fp._
+import quasar.physical.mongodb.MongoQueryModel
 
-import scalaz._
+import scalaz._, Scalaz._
 
 sealed trait AccumOp[A]
 object AccumOp {
@@ -33,20 +34,32 @@ object AccumOp {
   final case class $avg[A](value: A)      extends AccumOp[A]
   final case class $sum[A](value: A)      extends AccumOp[A]
 
+  // Since MongoDB 3.2:
+  final case class $stdDevSamp[A](value: A) extends AccumOp[A]
+  final case class $stdDevPop[A](value: A)  extends AccumOp[A]
+
+  def availableSinceƒ[A](f: A => MongoQueryModel): AccumOp[A] => MongoQueryModel = {
+    case $stdDevSamp(value) => f(value) |+| MongoQueryModel.`3.2`
+    case $stdDevPop(value)  => f(value) |+| MongoQueryModel.`3.2`
+    case op                 => f(op.copoint)
+  }
+
   implicit val AccumOpInstance: Traverse1[AccumOp] with Comonad[AccumOp]  =
     new Traverse1[AccumOp] with Comonad[AccumOp] {
       def cobind[A, B](fa: AccumOp[A])(f: (AccumOp[A]) ⇒ B) = map(fa)(κ(f(fa)))
 
       def copoint[A](p: AccumOp[A]) =
         p match {
-          case $addToSet(value) => value
-          case $avg(value)      => value
-          case $first(value)    => value
-          case $last(value)     => value
-          case $max(value)      => value
-          case $min(value)      => value
-          case $push(value)     => value
-          case $sum(value)      => value
+          case $addToSet(value)   => value
+          case $avg(value)        => value
+          case $first(value)      => value
+          case $last(value)       => value
+          case $max(value)        => value
+          case $min(value)        => value
+          case $push(value)       => value
+          case $sum(value)        => value
+          case $stdDevSamp(value) => value
+          case $stdDevPop(value)  => value
         }
 
       def foldMapRight1[A, B](fa: AccumOp[A])(z: (A) ⇒ B)(f: (A, ⇒ B) ⇒ B) =
@@ -54,14 +67,16 @@ object AccumOp {
 
       def traverse1Impl[G[_], A, B](fa: AccumOp[A])(f: A => G[B])(implicit G: Apply[G]) =
         fa match {
-          case $addToSet(value) => G.map(f(value))($addToSet(_))
-          case $avg(value)      => G.map(f(value))($avg(_))
-          case $first(value)    => G.map(f(value))($first(_))
-          case $last(value)     => G.map(f(value))($last(_))
-          case $max(value)      => G.map(f(value))($max(_))
-          case $min(value)      => G.map(f(value))($min(_))
-          case $push(value)     => G.map(f(value))($push(_))
-          case $sum(value)      => G.map(f(value))($sum(_))
+          case $addToSet(value)   => G.map(f(value))($addToSet(_))
+          case $avg(value)        => G.map(f(value))($avg(_))
+          case $first(value)      => G.map(f(value))($first(_))
+          case $last(value)       => G.map(f(value))($last(_))
+          case $max(value)        => G.map(f(value))($max(_))
+          case $min(value)        => G.map(f(value))($min(_))
+          case $push(value)       => G.map(f(value))($push(_))
+          case $sum(value)        => G.map(f(value))($sum(_))
+          case $stdDevSamp(value) => G.map(f(value))($stdDevSamp(_))
+          case $stdDevPop(value)  => G.map(f(value))($stdDevPop(_))
         }
     }
 
@@ -122,6 +137,20 @@ object $sum {
   def apply[A](value: A): AccumOp[A] = AccumOp.$sum[A](value)
   def unapply[A](obj: AccumOp[A]): Option[A] = obj match {
     case AccumOp.$sum(value) => Some(value)
+    case _          => None
+  }
+}
+object $stdDevSamp {
+  def apply[A](value: A): AccumOp[A] = AccumOp.$stdDevSamp[A](value)
+  def unapply[A](obj: AccumOp[A]): Option[A] = obj match {
+    case AccumOp.$stdDevSamp(value) => Some(value)
+    case _          => None
+  }
+}
+object $stdDevPop {
+  def apply[A](value: A): AccumOp[A] = AccumOp.$stdDevPop[A](value)
+  def unapply[A](obj: AccumOp[A]): Option[A] = obj match {
+    case AccumOp.$stdDevPop(value) => Some(value)
     case _          => None
   }
 }
