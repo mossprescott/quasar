@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-package quasar
-package physical
-package mongodb
-package workflowtask
+package quasar.physical.mongodb.workflowtask
 
 import quasar.Predef._
 import quasar.{RenderTree, Terminal, NonTerminal}
 import quasar.javascript._
+import quasar.physical.mongodb._
 
+import matryoshka.Algebra
 import scalaz._, Scalaz._
 
 /** A WorkflowTask approximately represents one request to MongoDB. */
@@ -50,6 +49,10 @@ object WorkflowTaskF {
   final case class MapReduceTaskF[A](source: A, mapReduce: MapReduce, outAct: Option[Action])
       extends WorkflowTaskF[A]
 
+  /** A task that executes a Mongo `distinct` command. NB: since MongoDB 3.2. */
+  final case class DistinctTaskF[A](source: A, field: BsonField, query: Option[Selector])
+    extends WorkflowTaskF[A]
+
   /** A task that executes a sequence of other tasks, one at a time, collecting
     * the results in the same collection. The first task must produce a new
     * collection, and the remaining tasks must be able to merge their results
@@ -65,6 +68,12 @@ object WorkflowTaskF {
   // final case class EvalTaskF[A](source: A, code: Js.FuncDecl)
   //     extends WorkflowTaskF[A]
 
+  val availableSinceƒ: Algebra[WorkflowTaskF, MongoQueryModel] = {
+    case DistinctTaskF(_, _, _) => MongoQueryModel.`3.2`
+
+    case _                      => MongoQueryModel.`2.6`
+  }
+
   implicit def traverse: Traverse[WorkflowTaskF] =
     new Traverse[WorkflowTaskF] {
       def traverseImpl[G[_], A, B](fa: WorkflowTaskF[A])(f: A => G[B])(implicit G: Applicative[G]):
@@ -76,6 +85,7 @@ object WorkflowTaskF {
             f(src).map(QueryTaskF(_, query, skip, limit))
           case PipelineTaskF(src, pipe) => f(src).map(PipelineTaskF(_, pipe))
           case MapReduceTaskF(src, mr, oa) => f(src).map(MapReduceTaskF(_, mr, oa))
+          case DistinctTaskF(src, field, sel) => f(src).map(DistinctTaskF(_, field, sel))
           case FoldLeftTaskF(h, t) =>
             (f(h) |@| t.traverse(f))(FoldLeftTaskF(_, _))
         }
@@ -126,6 +136,11 @@ object WorkflowTaskF {
               Terminal("Scope" :: nt, Some(scopeOpt.toString)),
               Terminal("JsMode" :: nt, Some(jsModeOpt.toString))
             ) ::: outAct.map(act => Terminal("Out" :: nt, Some(Action.bsonFieldName(act)))).toList)
+
+          case DistinctTaskF(source, field, query) =>
+            val nt = "DistinctTask" :: WorkflowTaskNodeType
+            NonTerminal(nt, Some(field.asText),
+              ra.render(source) :: query.map(RS.render).toList)
 
           case FoldLeftTaskF(head, tail) =>
             NonTerminal("FoldLeftTask" :: WorkflowTaskNodeType, None, ra.render(head) :: tail.toList.map(ra.render))
@@ -193,5 +208,15 @@ object FoldLeftTaskF {
     obj match {
       case WorkflowTaskF.FoldLeftTaskF(head, tail) => Some((head, tail))
       case _                                       => None
+    }
+}
+
+object DistinctTaskF {
+  def apply[A](source: A, field: BsonField, query: Option[Selector]): WorkflowTaskF[A] =
+    WorkflowTaskF.DistinctTaskF[A](source, field, query)
+  def unapply[A](obj: WorkflowTaskF[A]): Option[(A, BsonField, Option[Selector])] =
+    obj match {
+      case WorkflowTaskF.DistinctTaskF(source, field, query) => Some((source, field, query))
+      case _                                                 => None
     }
 }
