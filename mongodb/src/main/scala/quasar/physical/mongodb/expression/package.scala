@@ -86,6 +86,7 @@ package object expression {
     case $modF(left, right) => bsonArr("$mod", left, right)
     case $multiplyF(left, right) => bsonArr("$multiply", left, right)
     case $subtractF(left, right) => bsonArr("$subtract", left, right)
+    // TODO: abs, ...
     case $concatF(first, second, others @ _*) =>
       bsonArr("$concat", first +: second +: others: _*)
     case $strcasecmpF(left, right) => bsonArr("$strcasecmp", left, right)
@@ -119,9 +120,18 @@ package object expression {
     case $minuteF(date) => bsonDoc("$minute", date)
     case $secondF(date) => bsonDoc("$second", date)
     case $millisecondF(date) => bsonDoc("$millisecond", date)
+    case $dateToStringF(format, date) =>
+      bsonDoc("$dateToString", Bson.Doc(ListMap(
+        "format" -> Bson.Text(format.components.foldMap(_.fold(_.replace("%", "%%"), _.str))),
+        "date" -> date)))
     case $condF(predicate, ifTrue, ifFalse) =>
       bsonArr("$cond", predicate, ifTrue, ifFalse)
     case $ifNullF(expr, replacement) => bsonArr("$ifNull", expr, replacement)
+  }
+
+  val availableSinceƒ: Algebra[ExprOp, MongoQueryModel] = {
+    case $dateToStringF(_, date) => date |+| MongoQueryModel.`3.0`
+
   }
 
   def rewriteExprRefs(t: Expression)(applyVar: PartialFunction[DocVar, DocVar]) =
@@ -134,10 +144,10 @@ package object expression {
     def traverseImpl[G[_], A, B](fa: ExprOp[A])(f: A => G[B])(implicit G: Applicative[G]):
         G[ExprOp[B]] =
       fa match {
-        case $includeF()          => G.point($includeF())
-        case $varF(dv)            => G.point($varF(dv))
-        case $addF(l, r)          => (f(l) |@| f(r))($addF(_, _))
-        case $andF(a, b, cs @ _*) => (f(a) |@| f(b) |@| cs.toList.traverse(f))($andF(_, _, _: _*))
+        case $includeF()             => G.point($includeF())
+        case $varF(dv)               => G.point($varF(dv))
+        case $addF(l, r)             => (f(l) |@| f(r))($addF(_, _))
+        case $andF(a, b, cs @ _*)    => (f(a) |@| f(b) |@| cs.toList.traverse(f))($andF(_, _, _: _*))
         case $setEqualsF(l, r)       => (f(l) |@| f(r))($setEqualsF(_, _))
         case $setIntersectionF(l, r) => (f(l) |@| f(r))($setIntersectionF(_, _))
         case $setDifferenceF(l, r)   => (f(l) |@| f(r))($setDifferenceF(_, _))
@@ -145,42 +155,54 @@ package object expression {
         case $setIsSubsetF(l, r)     => (f(l) |@| f(r))($setIsSubsetF(_, _))
         case $anyElementTrueF(v)     => G.map(f(v))($anyElementTrueF(_))
         case $allElementsTrueF(v)    => G.map(f(v))($allElementsTrueF(_))
-        case $arrayMapF(a, b, c)  => (f(a) |@| f(c))($arrayMapF(_, b, _))
-        case $cmpF(l, r)          => (f(l) |@| f(r))($cmpF(_, _))
+        case $arrayMapF(a, b, c)     => (f(a) |@| f(c))($arrayMapF(_, b, _))
+        case $cmpF(l, r)             => (f(l) |@| f(r))($cmpF(_, _))
         case $concatF(a, b, cs @ _*) => (f(a) |@| f(b) |@| cs.toList.traverse(f))($concatF(_, _, _: _*))
-        case $condF(a, b, c)      => (f(a) |@| f(b) |@| f(c))($condF(_, _, _))
-        case $dayOfMonthF(a)      => G.map(f(a))($dayOfMonthF(_))
-        case $dayOfWeekF(a)       => G.map(f(a))($dayOfWeekF(_))
-        case $dayOfYearF(a)       => G.map(f(a))($dayOfYearF(_))
-        case $divideF(a, b)       => (f(a) |@| f(b))($divideF(_, _))
-        case $eqF(a, b)           => (f(a) |@| f(b))($eqF(_, _))
-        case $gtF(a, b)           => (f(a) |@| f(b))($gtF(_, _))
-        case $gteF(a, b)          => (f(a) |@| f(b))($gteF(_, _))
-        case $hourF(a)            => G.map(f(a))($hourF(_))
-        case $metaF()             => G.point($metaF())
-        case $sizeF(a)            => G.map(f(a))($sizeF(_))
-        case $ifNullF(a, b)       => (f(a) |@| f(b))($ifNullF(_, _))
-        case $letF(a, b)          =>
+        case $condF(a, b, c)         => (f(a) |@| f(b) |@| f(c))($condF(_, _, _))
+        case $dateToStringF(fmt, a)  => G.map(f(a))($dateToStringF(fmt, _))
+        case $dayOfMonthF(a)         => G.map(f(a))($dayOfMonthF(_))
+        case $dayOfWeekF(a)          => G.map(f(a))($dayOfWeekF(_))
+        case $dayOfYearF(a)          => G.map(f(a))($dayOfYearF(_))
+        case $divideF(a, b)          => (f(a) |@| f(b))($divideF(_, _))
+        case $eqF(a, b)              => (f(a) |@| f(b))($eqF(_, _))
+        case $gtF(a, b)              => (f(a) |@| f(b))($gtF(_, _))
+        case $gteF(a, b)             => (f(a) |@| f(b))($gteF(_, _))
+        case $hourF(a)               => G.map(f(a))($hourF(_))
+        case $metaF()                => G.point($metaF())
+        case $sizeF(a)               => G.map(f(a))($sizeF(_))
+        case $ifNullF(a, b)          => (f(a) |@| f(b))($ifNullF(_, _))
+        case $letF(a, b)             =>
           (Traverse[ListMap[DocVar.Name, ?]].sequence[G, B](a.map(t => t._1 -> f(t._2))) |@| f(b))($letF(_, _))
-        case $literalF(lit)       => G.point($literalF(lit))
-        case $ltF(a, b)           => (f(a) |@| f(b))($ltF(_, _))
-        case $lteF(a, b)          => (f(a) |@| f(b))($lteF(_, _))
-        case $millisecondF(a)     => G.map(f(a))($millisecondF(_))
-        case $minuteF(a)          => G.map(f(a))($minuteF(_))
-        case $modF(a, b)          => (f(a) |@| f(b))($modF(_, _))
-        case $monthF(a)           => G.map(f(a))($monthF(_))
-        case $multiplyF(a, b)     => (f(a) |@| f(b))($multiplyF(_, _))
-        case $neqF(a, b)          => (f(a) |@| f(b))($neqF(_, _))
-        case $notF(a)             => G.map(f(a))($notF(_))
-        case $orF(a, b, cs @ _*)  => (f(a) |@| f(b) |@| cs.toList.traverse(f))($orF(_, _, _: _*))
-        case $secondF(a)          => G.map(f(a))($secondF(_))
-        case $strcasecmpF(a, b)   => (f(a) |@| f(b))($strcasecmpF(_, _))
-        case $substrF(a, b, c)    => (f(a) |@| f(b) |@| f(c))($substrF(_, _, _))
-        case $subtractF(a, b)     => (f(a) |@| f(b))($subtractF(_, _))
-        case $toLowerF(a)         => G.map(f(a))($toLowerF(_))
-        case $toUpperF(a)         => G.map(f(a))($toUpperF(_))
-        case $weekF(a)            => G.map(f(a))($weekF(_))
-        case $yearF(a)            => G.map(f(a))($yearF(_))
+        case $literalF(lit)          => G.point($literalF(lit))
+        case $ltF(a, b)              => (f(a) |@| f(b))($ltF(_, _))
+        case $lteF(a, b)             => (f(a) |@| f(b))($lteF(_, _))
+        case $millisecondF(a)        => G.map(f(a))($millisecondF(_))
+        case $minuteF(a)             => G.map(f(a))($minuteF(_))
+        case $modF(a, b)             => (f(a) |@| f(b))($modF(_, _))
+        case $monthF(a)              => G.map(f(a))($monthF(_))
+        case $multiplyF(a, b)        => (f(a) |@| f(b))($multiplyF(_, _))
+        case $neqF(a, b)             => (f(a) |@| f(b))($neqF(_, _))
+        case $notF(a)                => G.map(f(a))($notF(_))
+        case $orF(a, b, cs @ _*)     => (f(a) |@| f(b) |@| cs.toList.traverse(f))($orF(_, _, _: _*))
+        case $secondF(a)             => G.map(f(a))($secondF(_))
+        case $strcasecmpF(a, b)      => (f(a) |@| f(b))($strcasecmpF(_, _))
+        case $substrF(a, b, c)       => (f(a) |@| f(b) |@| f(c))($substrF(_, _, _))
+        case $subtractF(a, b)        => (f(a) |@| f(b))($subtractF(_, _))
+        case $toLowerF(a)            => G.map(f(a))($toLowerF(_))
+        case $toUpperF(a)            => G.map(f(a))($toUpperF(_))
+        case $weekF(a)               => G.map(f(a))($weekF(_))
+        case $yearF(a)               => G.map(f(a))($yearF(_))
+        // TODO:
+        // sqrt
+        // abs
+        // log
+        // log10
+        // ln
+        // pow
+        // exp
+        // trunc
+        // ceil
+        // floor
       }
   }
 

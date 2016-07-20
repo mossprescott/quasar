@@ -18,19 +18,54 @@ package quasar.physical.mongodb.expression
 
 import quasar.Predef._
 
+import quasar.physical.mongodb.{Bson, BsonField}
+
 import matryoshka.Recursive.ops._
-import org.scalacheck._
+import org.scalacheck._, Arbitrary.arbitrary
 import org.specs2.mutable._
 import org.specs2.scalaz._
-
-import quasar.physical.mongodb.{Bson, BsonField}
+import scalaz._
+import scalacheck.ScalazArbitrary._
 
 object ArbitraryExprOp {
 
-  lazy val genExpr: Gen[Expression] = Gen.const($literal(Bson.Int32(1)))
+  implicit val formatSpecifierArbitrary: Arbitrary[ExprOp.FormatSpecifier] = Arbitrary {
+    import ExprOp.FormatSpecifier._
+    Gen.oneOf(
+      Year, Month, DayOfMonth,
+      Hour, Minute, Second, Millisecond,
+      DayOfYear, DayOfWeek, WeekOfYear)
+  }
+
+  implicit val formatStringArbitrary: Arbitrary[ExprOp.FormatString] = Arbitrary {
+    arbitrary[List[String \/ ExprOp.FormatSpecifier]].map(s =>
+      ExprOp.FormatString(s))
+  }
+
+  lazy val genExpr: Gen[Expression] =
+    Gen.oneOf(
+      arbitrary[Int].map(x => $literal(Bson.Int32(x))),
+      arbitrary[ExprOp.FormatString].map(fmt =>
+        $dateToString(fmt, $var(DocField(BsonField.Name("date"))))),
+      Gen.alphaChar.map(c => $var(DocField(BsonField.Name(c.toString)))),
+      genExpr.flatMap(x => Gen.oneOf(
+        $sqrt(x),
+        $abs(x),
+        $log10(x),
+        $ln(x),
+        $trunc(x),
+        $ceil(x),
+        $floor(x))),
+      for {
+        x <- genExpr
+        y <- genExpr
+        expr <- Gen.oneOf(
+        $log(x, y),
+        $pow(x, y))
+      } yield expr)
 }
 
-class ExpressionSpec extends Specification with DisjunctionMatchers {
+class ExpressionSpec extends Specification with DisjunctionMatchers with ScalazMatchers {
 
   "Expression" should {
 
@@ -96,6 +131,35 @@ class ExpressionSpec extends Specification with DisjunctionMatchers {
           $literal(Bson.Date(Instant.ofEpochMilli(0))),
           $var(DocField(BsonField.Name("epoch"))))) must beRightDisjunction(
         JsFn(JsFn.defaultName, New(Name("Date"), List(Select(Ident(JsFn.defaultName), "epoch")))))
+    }
+  }
+
+  "FormatSpecifier" should {
+    import ExprOp._, FormatSpecifier._
+
+    def toBson(fmt: FormatString): Bson =
+      $dateToString(fmt, $var(DocField(BsonField.Name("date"))))
+        .cata(bsonƒ)
+
+    def expected(str: String): Bson =
+      Bson.Doc(ListMap(
+        "$dateToString" -> Bson.Doc(ListMap(
+          "format" -> Bson.Text(str),
+          "date" -> Bson.Text("$date")))))
+
+    "match first example from mongodb docs" in {
+      toBson(Year :: "-" :: Month :: "-" :: DayOfMonth :: FormatString.empty) must_==
+        expected("%Y-%m-%d")
+    }
+
+    "match second example from mongodb docs" in {
+      toBson(Hour :: ":" :: Minute :: ":" :: Second :: ":" :: Millisecond :: FormatString.empty) must_==
+        expected("%H:%M:%S:%L")
+    }
+
+    "escape `%`s" in {
+      toBson(Hour :: "%" :: Minute :: "%" :: Second :: FormatString.empty) must_==
+        expected("%H%%%M%%%S")
     }
   }
 }

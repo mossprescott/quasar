@@ -124,6 +124,46 @@ object $subtract {
   def apply(left: Expression, right: Expression): Expression = Fix($subtractF(left, right))
   def unapply(obj: Expression): Option[(Expression, Expression)] = $subtractF.unapply(obj.unFix)
 }
+object $sqrt {
+  def apply(value: Expression): Expression = Fix($sqrtF(value))
+  def unapply(obj: Expression): Option[Expression] = $sqrtF.unapply(obj.unFix)
+}
+object $abs {
+  def apply(value: Expression): Expression = Fix($absF(value))
+  def unapply(obj: Expression): Option[Expression] = $absF.unapply(obj.unFix)
+}
+object $log {
+  def apply(value: Expression, base: Expression): Expression = Fix($logF(value, base))
+  def unapply(obj: Expression): Option[(Expression, Expression)] = $logF.unapply(obj.unFix)
+}
+object $log10 {
+  def apply(value: Expression): Expression = Fix($log10F(value))
+  def unapply(obj: Expression): Option[Expression] = $log10F.unapply(obj.unFix)
+}
+object $ln {
+  def apply(value: Expression): Expression = Fix($lnF(value))
+  def unapply(obj: Expression): Option[Expression] = $lnF.unapply(obj.unFix)
+}
+object $pow {
+  def apply(value: Expression, exp: Expression): Expression = Fix($powF(value, exp))
+  def unapply(obj: Expression): Option[(Expression, Expression)] = $powF.unapply(obj.unFix)
+}
+object $exp {
+  def apply(value: Expression): Expression = Fix($expF(value))
+  def unapply(obj: Expression): Option[Expression] = $expF.unapply(obj.unFix)
+}
+object $trunc {
+  def apply(value: Expression): Expression = Fix($truncF(value))
+  def unapply(obj: Expression): Option[Expression] = $truncF.unapply(obj.unFix)
+}
+object $ceil {
+  def apply(value: Expression): Expression = Fix($ceilF(value))
+  def unapply(obj: Expression): Option[Expression] = $ceilF.unapply(obj.unFix)
+}
+object $floor {
+  def apply(value: Expression): Expression = Fix($floorF(value))
+  def unapply(obj: Expression): Option[Expression] = $floorF.unapply(obj.unFix)
+}
 
 object $concat {
   def apply(first: Expression, second: Expression, others: Expression*): Expression = Fix($concatF(first, second, others: _*))
@@ -215,6 +255,10 @@ object $second {
 object $millisecond {
   def apply(date: Expression): Expression = Fix($millisecondF(date))
   def unapply(obj: Expression): Option[Expression] = $millisecondF.unapply(obj.unFix)
+}
+object $dateToString {
+  def apply(format: ExprOp.FormatString, date: Expression): Expression = Fix($dateToStringF(format, date))
+  def unapply(obj: Expression): Option[(ExprOp.FormatString, Expression)] = $dateToStringF.unapply(obj.unFix)
 }
 
 object $cond {

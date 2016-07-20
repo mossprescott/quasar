@@ -19,6 +19,9 @@ package quasar.physical.mongodb.expression
 import quasar.Predef._
 import quasar.physical.mongodb.Bson
 
+import scalaz.\/
+import scalaz.syntax.either._
+
 sealed trait ExprOp[A]
 object ExprOp {
   final case class $includeF[A]() extends ExprOp[A]
@@ -82,6 +85,44 @@ object ExprOp {
   final case class $condF[A](predicate: A, ifTrue: A, ifFalse: A)
       extends ExprOp[A]
   final case class $ifNullF[A](expr: A, replacement: A) extends ExprOp[A]
+
+  // Since MongoDB 3.0
+  final case class $dateToStringF[A](format: FormatString, date: A)
+    extends ExprOp[A]
+
+  // Since MongoDB 3.2
+  final case class $sqrtF[A](value: A)         extends ExprOp[A]
+  final case class $absF[A](value: A)          extends ExprOp[A]
+  final case class $logF[A](value: A, base: A) extends ExprOp[A]
+  final case class $log10F[A](value: A)        extends ExprOp[A]
+  final case class $lnF[A](value: A)           extends ExprOp[A]
+  final case class $powF[A](value: A, exp: A)  extends ExprOp[A]
+  final case class $expF[A](value: A)          extends ExprOp[A]
+  final case class $truncF[A](value: A)        extends ExprOp[A]
+  final case class $ceilF[A](value: A)         extends ExprOp[A]
+  final case class $floorF[A](value: A)        extends ExprOp[A]
+
+
+  sealed abstract class FormatSpecifier(val str: String)
+  object FormatSpecifier {
+    case object Year        extends FormatSpecifier("%Y")
+    case object Month       extends FormatSpecifier("%m")
+    case object DayOfMonth  extends FormatSpecifier("%d")
+    case object Hour        extends FormatSpecifier("%H")
+    case object Minute      extends FormatSpecifier("%M")
+    case object Second      extends FormatSpecifier("%S")
+    case object Millisecond extends FormatSpecifier("%L")
+    case object DayOfYear   extends FormatSpecifier("%j")
+    case object DayOfWeek   extends FormatSpecifier("%w")
+    case object WeekOfYear  extends FormatSpecifier("%U")
+  }
+  final case class FormatString(components: List[String \/ FormatSpecifier]) {
+    def ::(str: String): FormatString = FormatString(str.left :: components)
+    def ::(spec: FormatSpecifier): FormatString = FormatString(spec.right :: components)
+  }
+  object FormatString {
+    val empty: FormatString = FormatString(Nil)
+  }
 }
 
 object $includeF {
@@ -265,6 +306,77 @@ object $subtractF {
     case _                              => None
   }
 }
+object $sqrtF {
+  def apply[A](value: A): ExprOp[A] = ExprOp.$sqrtF[A](value)
+  def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
+    case ExprOp.$sqrtF(value) => Some(value)
+    case _                             => None
+  }
+}
+object $absF {
+  def apply[A](value: A): ExprOp[A] = ExprOp.$absF[A](value)
+  def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
+    case ExprOp.$absF(value) => Some(value)
+    case _                             => None
+  }
+}
+object $logF {
+  def apply[A](value: A, base: A): ExprOp[A] = ExprOp.$logF[A](value, base)
+  def unapply[A](obj: ExprOp[A]): Option[(A, A)] = obj match {
+    case ExprOp.$logF(value, base) => Some((value, base))
+    case _                              => None
+  }
+}
+object $log10F {
+  def apply[A](value: A): ExprOp[A] = ExprOp.$log10F[A](value)
+  def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
+    case ExprOp.$log10F(value) => Some(value)
+    case _                             => None
+  }
+}
+object $lnF {
+  def apply[A](value: A): ExprOp[A] = ExprOp.$lnF[A](value)
+  def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
+    case ExprOp.$lnF(value) => Some(value)
+    case _                             => None
+  }
+}
+object $powF {
+  def apply[A](value: A, exp: A): ExprOp[A] = ExprOp.$powF[A](value, exp)
+  def unapply[A](obj: ExprOp[A]): Option[(A, A)] = obj match {
+    case ExprOp.$powF(value, exp) => Some((value, exp))
+    case _                              => None
+  }
+}
+object $expF {
+  def apply[A](value: A): ExprOp[A] = ExprOp.$expF[A](value)
+  def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
+    case ExprOp.$expF(value) => Some(value)
+    case _                             => None
+  }
+}
+object $truncF {
+  def apply[A](value: A): ExprOp[A] = ExprOp.$truncF[A](value)
+  def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
+    case ExprOp.$truncF(value) => Some(value)
+    case _                             => None
+  }
+}
+object $ceilF {
+  def apply[A](value: A): ExprOp[A] = ExprOp.$ceilF[A](value)
+  def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
+    case ExprOp.$ceilF(value) => Some(value)
+    case _                             => None
+  }
+}
+object $floorF {
+  def apply[A](value: A): ExprOp[A] = ExprOp.$floorF[A](value)
+  def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
+    case ExprOp.$floorF(value) => Some(value)
+    case _                             => None
+  }
+}
+
 
 object $concatF {
   def apply[A](first: A, second: A, others: A*): ExprOp[A] = ExprOp.$concatF[A](first, second, others: _*)
@@ -410,6 +522,13 @@ object $millisecondF {
   def apply[A](date: A): ExprOp[A] = ExprOp.$millisecondF[A](date)
   def unapply[A](obj: ExprOp[A]): Option[A] = obj match {
     case ExprOp.$millisecondF(date) => Some(date)
+    case _          => None
+  }
+}
+object $dateToStringF {
+  def apply[A](format: ExprOp.FormatString, date: A): ExprOp[A] = ExprOp.$dateToStringF[A](format, date)
+  def unapply[A](obj: ExprOp[A]): Option[(ExprOp.FormatString, A)] = obj match {
+    case ExprOp.$dateToStringF(format, date) => Some((format, date))
     case _          => None
   }
 }
